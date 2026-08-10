@@ -1,5 +1,7 @@
 # Flair Messenger (FM)
 
+THIS APPLICATION IS STILL IN DEVELOPMENT! USING IT IS AT OWN RISK!
+
 Simple start:
 
 1. Double-click on `Start-FlairMessenger.bat`.
