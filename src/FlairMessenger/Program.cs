@@ -20,7 +20,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.25";
+    public const string Version = "0.4.26";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -1498,7 +1498,11 @@ internal sealed class MainForm : Form
     private readonly RichTextBox _messageFeed = new();
     private readonly Label _title = new();
     private readonly Label _subtitle = new();
+    private readonly Panel _clientArea = new();
+    private readonly TableLayoutPanel _shell = new();
     private readonly Panel _content = new();
+    private readonly Panel _logoutOverlay = new();
+    private readonly ProgressBar _logoutProgress = new();
     private readonly Panel _titleBar = new();
     private readonly Label _windowTitle = new();
     private readonly Button _maximizeWindowButton = new();
@@ -1625,27 +1629,29 @@ internal sealed class MainForm : Form
         BuildTitleBar();
         windowLayout.Controls.Add(_titleBar, 0, 0);
 
-        var shell = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
-            BackColor = Theme.Bg
-        };
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        windowLayout.Controls.Add(shell, 0, 1);
+        _clientArea.Dock = DockStyle.Fill;
+        _clientArea.Margin = Padding.Empty;
+        _clientArea.BackColor = Theme.Bg;
+        windowLayout.Controls.Add(_clientArea, 0, 1);
+
+        _shell.Dock = DockStyle.Fill;
+        _shell.ColumnCount = 2;
+        _shell.RowCount = 1;
+        _shell.Margin = Padding.Empty;
+        _shell.Padding = Padding.Empty;
+        _shell.BackColor = Theme.Bg;
+        _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
+        _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _clientArea.Controls.Add(_shell);
 
         var rail = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Rail, Padding = new Padding(12), Margin = Padding.Empty };
-        shell.Controls.Add(rail, 0, 0);
+        _shell.Controls.Add(rail, 0, 0);
 
         _content.Dock = DockStyle.Fill;
         _content.BackColor = Theme.Bg;
         _content.Margin = Padding.Empty;
-        shell.Controls.Add(_content, 1, 0);
+        _shell.Controls.Add(_content, 1, 0);
 
         var railLayout = new TableLayoutPanel
         {
@@ -1707,6 +1713,79 @@ internal sealed class MainForm : Form
             _navButtons[text] = button;
         }
         SetActiveNavigation("Chats");
+        BuildLogoutOverlay();
+    }
+
+    private void BuildLogoutOverlay()
+    {
+        _logoutOverlay.Dock = DockStyle.Fill;
+        _logoutOverlay.Margin = Padding.Empty;
+        _logoutOverlay.BackColor = Theme.Bg;
+        _logoutOverlay.Visible = false;
+        _logoutOverlay.AccessibleName = "Inline signing out status";
+
+        var centeringLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Theme.Bg
+        };
+        centeringLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        centeringLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 520));
+        centeringLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        centeringLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        centeringLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
+        centeringLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        _logoutOverlay.Controls.Add(centeringLayout);
+
+        var statusLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = new Padding(28, 24, 28, 24),
+            BackColor = Theme.Panel
+        };
+        statusLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        centeringLayout.Controls.Add(statusLayout, 1, 1);
+
+        var title = new Label
+        {
+            Text = "Signing out of Second Life...",
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 16, FontStyle.Bold),
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        statusLayout.Controls.Add(title, 0, 0);
+
+        var explanation = new Label
+        {
+            Text = "Closing your avatar session safely. Please wait.",
+            Dock = DockStyle.Fill,
+            Font = Theme.Font,
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Panel,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        statusLayout.Controls.Add(explanation, 0, 1);
+
+        _logoutProgress.Dock = DockStyle.Fill;
+        _logoutProgress.Style = ProgressBarStyle.Marquee;
+        _logoutProgress.MarqueeAnimationSpeed = 25;
+        _logoutProgress.Margin = Padding.Empty;
+        _logoutProgress.AccessibleName = "Signing out progress";
+        statusLayout.Controls.Add(_logoutProgress, 0, 2);
+
+        _clientArea.Controls.Add(_logoutOverlay);
     }
 
     private void BuildTitleBar()
@@ -2667,11 +2746,7 @@ internal sealed class MainForm : Form
             Text = "Flair Messenger - Signing out...";
             _windowTitle.Text = "Flair Messenger - Signing out...";
             _tray.Visible = false;
-
-            using var logoutWindow = new LogoutProgressForm();
-            logoutWindow.Show(this);
-            logoutWindow.Activate();
-            Enabled = false;
+            ShowLogoutOverlay();
             var minimumVisibleTime = Task.Delay(TimeSpan.FromMilliseconds(750));
 
             try
@@ -2690,7 +2765,7 @@ internal sealed class MainForm : Form
             finally
             {
                 await minimumVisibleTime;
-                logoutWindow.Complete();
+                _logoutProgress.MarqueeAnimationSpeed = 0;
                 _logoutFinished = true;
                 Close();
             }
@@ -2705,6 +2780,18 @@ internal sealed class MainForm : Form
         _unreadBadgeIcon = null;
         _service.Dispose();
         base.OnFormClosing(e);
+    }
+
+    private void ShowLogoutOverlay()
+    {
+        if (!Visible) Show();
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        UpdateMaximizeButton();
+        _shell.Enabled = false;
+        _logoutProgress.MarqueeAnimationSpeed = 25;
+        _logoutOverlay.Visible = true;
+        _logoutOverlay.BringToFront();
+        Activate();
     }
 
     private sealed record ConversationItem(
@@ -2729,84 +2816,5 @@ internal sealed class MainForm : Form
         System,
         Private,
         Group
-    }
-}
-
-internal sealed class LogoutProgressForm : Form
-{
-    private bool _allowClose;
-
-    public LogoutProgressForm()
-    {
-        Text = "Signing out";
-        ClientSize = new Size(430, 150);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        ControlBox = false;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.CenterParent;
-        BackColor = Theme.Bg;
-        ForeColor = Theme.Text;
-        Icon = LoginForm.AppIcon();
-
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            Padding = new Padding(24, 20, 24, 20),
-            BackColor = Theme.Bg
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        Controls.Add(layout);
-
-        var title = new Label
-        {
-            Text = "Signing out of Second Life...",
-            Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 13, FontStyle.Bold),
-            ForeColor = Theme.Text,
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-        layout.Controls.Add(title, 0, 0);
-
-        var explanation = new Label
-        {
-            Text = "Closing your avatar session safely. Please wait.",
-            Dock = DockStyle.Fill,
-            Font = Theme.Font,
-            ForeColor = Theme.Muted,
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-        layout.Controls.Add(explanation, 0, 1);
-
-        var progress = new ProgressBar
-        {
-            Dock = DockStyle.Fill,
-            Style = ProgressBarStyle.Marquee,
-            MarqueeAnimationSpeed = 25,
-            Margin = Padding.Empty
-        };
-        layout.Controls.Add(progress, 0, 2);
-    }
-
-    public void Complete()
-    {
-        _allowClose = true;
-        Close();
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (!_allowClose)
-        {
-            e.Cancel = true;
-            return;
-        }
-        base.OnFormClosing(e);
     }
 }

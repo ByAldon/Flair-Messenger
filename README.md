@@ -17,14 +17,14 @@ Flair Messenger - Messenger for Second Life provides a focused way to access Sec
 
 The application connects directly to the official Second Life main grid through LibreMetaverse. It supports private conversations, group conversations, friends, notifications and local message history.
 
-Current version: **0.4.25**
+Current version: **0.4.26**
 
 > [!WARNING]
 > Flair Messenger does not currently support MFA/2FA login challenges. An account that requires a second factor during sign-in cannot complete login through this client. Do not disable MFA/2FA solely to use an experimental application. MFA/2FA support is a future goal, but it is not currently prioritized or scheduled while the application remains in development. See [ROADMAP.md](ROADMAP.md).
 
 ## Required third-party viewer disclosure
 
-- **Software:** Flair Messenger 0.4.25.
+- **Software:** Flair Messenger 0.4.26.
 - **Linden Lab status:** This software is not provided or supported by Linden Lab, the makers of Second Life.
 - **Support:** Community assistance may be available through this repository's GitHub issues, but no customer support or response time is guaranteed. Linden Lab does not provide support for Flair Messenger.
 - **Limitations:** Flair Messenger is a text-focused client and does not support MFA/2FA login challenges, the 3D world, voice, inventory, avatar rendering or many other features of the official viewer. Review [Known limitations](#known-limitations) before installation.
@@ -174,7 +174,7 @@ To restore the application, double-click its tray icon or use **Open Flair Messe
 
 To close the application, use the window close button or select **Exit** from the tray menu. Flair Messenger then:
 
-1. Displays a dedicated `Signing out of Second Life...` window with an animated progress bar.
+1. Displays `Signing out of Second Life...` with an animated progress bar inside the main client window.
 2. Requests the official Second Life logout handshake.
 3. Waits for logout to finish.
 4. Uses a blocking network shutdown fallback if the graceful request fails or times out.
@@ -351,215 +351,9 @@ This is expected. Minimizing sends Flair Messenger to the system tray so it can 
 - JSON-based local storage
 - Windows Data Protection API for remembered passwords
 
-## Version history
+## Releases
 
-### 0.4.25
-
-- Enlarges the close glyph in the custom title bars to a standard, clearly visible size.
-- Keeps a centered close button with a minimum 44 x 32 pixel click area in both application windows.
-
-### 0.4.24
-
-- Keeps the complete integrated window title on a single line in the login window.
-- Prevents title text from dropping below the title bar under Windows DPI or font scaling.
-- Applies the same single-line title protection to the main client window.
-
-### 0.4.23
-
-- Preserves every message when **Close chat** is used.
-- Displays message history from previous sessions in muted gray.
-- Marks messages from before the most recent **Close chat** action as older history when the conversation is reopened.
-- Keeps newly received or sent messages bright so the history boundary is visually clear.
-- Stores per-conversation history cut-off times with remembered account settings inside the encrypted settings file.
-
-### 0.4.22
-
-- Replaced the static Settings information page with a client-preferences page.
-- Added a **Minimize to system tray** checkbox that is enabled by default.
-- Keeps the client on the Windows taskbar when the preference is disabled.
-- Applies the choice immediately and stores it inside the existing DPAPI-encrypted `settings.dat` file.
-- Treats this as a client-wide preference shared by all accounts in the same application folder.
-
-### 0.4.21
-
-- Added a **Close chat** action to private and group conversation headers.
-- Hides a closed conversation without deleting its encrypted message history.
-- Automatically reopens a closed conversation when a new message arrives.
-- Reopens chats deliberately selected from Friends or Groups.
-- Remembers closed conversations separately for each remembered account while keeping the state session-only for unremembered accounts.
-- Keeps the System conversation available for connection and application status messages.
-
-### 0.4.20
-
-- Made Login location editable while keeping the Home and Last location choices.
-- Accepts pasted `maps.secondlife.com`, `slurl.com` and `secondlife://` location SLURLs.
-- Accepts a region name or `Region/X/Y/Z` directly and fills in safe default coordinates when omitted.
-- Validates the destination locally and shows an English error before login for unsupported links or invalid coordinates.
-- Remembers each account's normalized custom login location inside the encrypted account profile.
-- Shows the custom destination in the client Settings and System conversation header.
-
-### 0.4.19
-
-- Added support for remembering multiple Second Life accounts.
-- Changed Login name into an editable account drop-down that switches the saved password, login location and terms preference.
-- Migrates the previously remembered single account into the new profile list automatically.
-- Adds, updates or forgets an account only after a successful login, so a failed attempt never removes saved credentials.
-- Keeps all remembered profiles inside the existing Windows DPAPI-encrypted `settings.dat` file.
-
-### 0.4.18
-
-- Replaced the white native title bar on the login screen with a matching integrated dark title bar.
-- Added matching minimize and close controls to the login window.
-- Allows the login window to be moved by dragging its integrated title bar.
-
-### 0.4.17
-
-- Removed the redundant two-letter abbreviation from the visible interface and documentation.
-- Uses **Flair Messenger - Messenger for Second Life** as the complete product title.
-- Shows **Flair Messenger** as the sender of application status and error messages.
-- Renames previously stored abbreviated application messages to **Flair Messenger** without changing user messages.
-
-### 0.4.16
-
-- Remembers the terms-acceptance checkbox when **Remember details** is enabled.
-- Restores the saved acceptance and enables Login on later starts.
-- Does not retain terms acceptance when **Remember details** is disabled.
-- Stores only a boolean acceptance preference inside the existing DPAPI-encrypted `settings.dat` file.
-
-### 0.4.15
-
-- Standardized the login screen on Segoe UI typography and consistent vertical text alignment.
-- Fixed the disabled Login button text being rendered too dark to read.
-- Applied the dark theme to the Login location selector and its drop-down items.
-- Kept the Login button disabled until the required terms checkbox is selected.
-
-### 0.4.14
-
-- Fixed a Friends refresh race that could replace Chats immediately after a friend was opened.
-- Made double-click reliably open the selected friend as a private IM.
-- Verified and hardened the same double-click behavior for Groups.
-- Added Enter as a keyboard alternative for opening a selected friend or group.
-- Preserves the actual friend or group name separately from its online or member-count display text.
-- Shows the current version directly in the integrated window title bar.
-
-### 0.4.13
-
-- Fixed group `SessionSend` messages being mistaken for private IMs when the `GroupIM` flag alone was insufficient.
-- Uses LibreMetaverse's known group-session state as an additional routing signal.
-- Routes every identified group message to a `group:` conversation keyed by its chat-session ID.
-- Labels the conversation list with **Group:** and **Private IM:** source prefixes.
-- Shows **Group chat** or **Private instant message** in the active chat header.
-- Includes the sender and conversation source in Notifications.
-
-### 0.4.12
-
-- Limited the recent Chats list to conversations with message activity during the last 24 hours.
-- Stopped automatically adding every friend, group and historical contact to the Chats list.
-- Keeps a friend or group visible when the user deliberately opens it to start a new conversation.
-- Preserves encrypted older history without allowing it to make inactive conversations look recent.
-
-### 0.4.11
-
-- Documented that MFA/2FA login challenges are not currently supported.
-- Added a security warning advising users not to disable MFA/2FA solely to use the client.
-- Added `ROADMAP.md` with directional plans for authentication, messaging, privacy, user experience and release engineering.
-
-### 0.4.10
-
-- Added a numbered unread-message badge to the Windows taskbar icon.
-- Uses the same unread badge on the system-tray icon while the client is minimized.
-- Counts only real incoming messages; typing protocol events never increase the badge.
-- Clears the badge when Chats is opened, an unread conversation is deliberately selected or **Mark all as read** is chosen from the tray menu.
-
-### 0.4.9
-
-- Filters Second Life `StartTyping` and `StopTyping` protocol events before notification, storage and display.
-- Keeps all normal private and group instant messages unchanged.
-- Removes legacy incoming `typing` artifacts from encrypted local chat history while preserving messages sent by the user.
-
-### 0.4.8
-
-- Loads the original transparent PNG directly in the integrated title bar.
-- Fixed the white triangular transparency artifact that could appear in the upper-left corner.
-- Clones logo images and releases native icon handles so the asset file is never left locked.
-
-### 0.4.7
-
-- Replaced the white Windows title bar on the main client with an integrated dark Flair Messenger title bar.
-- Added matching minimize, maximize/restore and close controls.
-- Preserved title-bar dragging, double-click maximize and resizing from every window edge and corner.
-
-### 0.4.6
-
-- Tracks the currently visible page explicitly instead of relying on detached WinForms controls.
-- Prevents group join, message and data refresh events from closing or replacing the active chat.
-- Prevents a delayed friends refresh from pulling the user back to the Friends page.
-
-### 0.4.5
-
-- Opens and confirms the Second Life group-chat session before sending a group message.
-- Reuses active group-chat sessions for later messages.
-- Added a visible **Joining...** state while the group session opens.
-- Reports group join failures and timeouts inside the selected group conversation.
-
-### 0.4.4
-
-- Added a dedicated visible logout window with an animated progress bar.
-- Keeps the logout status visible until the Second Life logout handshake finishes or reaches its timeout.
-- Prevents the logout window from being closed before the avatar session shutdown completes.
-
-### 0.4.3
-
-- Rebuilt the main window as separate navigation and content columns so pages no longer disappear behind the sidebar.
-- Restored the complete conversation list beside the active chat.
-- Reordered navigation into a natural top-to-bottom sequence below the app logo.
-- Added a clear purple selected state for the active navigation tab.
-- Standardized page headers, margins, lists and message-composer alignment.
-
-### 0.4.2
-
-- Explicitly requests the `buddy-list` login option.
-- Requests avatar names for every returned friend in safe batches.
-- Retries the initial friend load after login.
-- Added a visible friend-loading status and a manual **Refresh** button.
-
-### 0.4.1
-
-- Added `TERMS.md` with Second Life policy links and an at-your-own-risk notice.
-- Added a required terms-and-policy acceptance checkbox to the login screen.
-- Added direct links to the official Second Life terms, Third-Party Viewer Policy and Linden Lab Privacy Policy.
-- Added the disclosures required for a distributed third-party viewer.
-
-### 0.4.0
-
-- Added an MIT license for the original Flair Messenger source code.
-- Added dedicated privacy and security documentation.
-- Encrypted the complete saved settings file with Windows DPAPI.
-- Encrypted the complete local chat-history file with Windows DPAPI.
-- Added safe migration from legacy plaintext JSON storage.
-- Confirmed that the source contains no analytics, telemetry, advertising or unrelated network endpoints.
-
-### 0.3.4
-
-- Added graceful asynchronous logout before closing.
-- Added a blocking logout fallback when the graceful request fails.
-- Suppressed misleading connection-loss notifications during intentional logout.
-
-### 0.3.3
-
-- Added an animated login progress bar.
-- Added live connection status on the login screen.
-
-### 0.3.2
-
-- Converted all visible application text to English.
-- Added a visible startup message to the BAT launcher.
-- Updated the packaged launcher to prefer the compiled DLL.
-
-### 0.3.1
-
-- Fixed the `SplitterDistance` crash in the chat layout.
-- Fixed the hidden login window keeping the process alive after the main window closed.
+Version-specific changes and downloadable builds are published on the repository's [GitHub Releases](../../releases) page. This README intentionally documents only the current application behavior, requirements and limitations.
 
 ## Contributing
 
