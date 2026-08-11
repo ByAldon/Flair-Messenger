@@ -20,7 +20,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.26";
+    public const string Version = "0.4.27";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -458,7 +458,6 @@ internal static class Theme
     public static readonly Font Font = new("Segoe UI", 10);
     public static readonly Font Bold = new("Segoe UI", 10, FontStyle.Bold);
     public static readonly Font WindowGlyph = new("Segoe UI Symbol", 11);
-    public static readonly Font CloseGlyph = new("Segoe UI", 15);
 }
 
 internal sealed class ThemedButton : Button
@@ -484,6 +483,30 @@ internal sealed class ThemedButton : Button
             ClientRectangle,
             disabledText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+    }
+}
+
+internal sealed class WindowCloseButton : Button
+{
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+
+        var scale = DeviceDpi / 96f;
+        var halfGlyph = 5f * scale;
+        var centerX = (ClientSize.Width - 1) / 2f;
+        var centerY = (ClientSize.Height - 1) / 2f;
+        using var pen = new Pen(ForeColor, 1.35f * scale)
+        {
+            StartCap = LineCap.Square,
+            EndCap = LineCap.Square
+        };
+
+        var previousSmoothing = e.Graphics.SmoothingMode;
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.DrawLine(pen, centerX - halfGlyph, centerY - halfGlyph, centerX + halfGlyph, centerY + halfGlyph);
+        e.Graphics.DrawLine(pen, centerX + halfGlyph, centerY - halfGlyph, centerX - halfGlyph, centerY + halfGlyph);
+        e.Graphics.SmoothingMode = previousSmoothing;
     }
 }
 
@@ -1193,22 +1216,20 @@ internal sealed class LoginForm : Form
 
     private static Button WindowButton(string text, string accessibleName)
     {
-        var button = new Button
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Theme.Rail,
-            ForeColor = Theme.Text,
-            Font = accessibleName == "Close" ? Theme.CloseGlyph : Theme.WindowGlyph,
-            TextAlign = ContentAlignment.MiddleCenter,
-            MinimumSize = accessibleName == "Close" ? new Size(44, 32) : Size.Empty,
-            TabStop = false,
-            UseVisualStyleBackColor = false,
-            AccessibleName = accessibleName
-        };
+        var button = accessibleName == "Close" ? new WindowCloseButton() : new Button();
+        button.Text = accessibleName == "Close" ? "" : text;
+        button.Dock = DockStyle.Fill;
+        button.Margin = Padding.Empty;
+        button.Padding = Padding.Empty;
+        button.FlatStyle = FlatStyle.Flat;
+        button.BackColor = Theme.Rail;
+        button.ForeColor = Theme.Text;
+        button.Font = Theme.WindowGlyph;
+        button.TextAlign = ContentAlignment.MiddleCenter;
+        button.MinimumSize = accessibleName == "Close" ? new Size(44, 32) : Size.Empty;
+        button.TabStop = false;
+        button.UseVisualStyleBackColor = false;
+        button.AccessibleName = accessibleName;
         button.FlatAppearance.BorderSize = 0;
         button.FlatAppearance.MouseOverBackColor = Theme.Input;
         button.FlatAppearance.MouseDownBackColor = Theme.Panel;
@@ -1391,8 +1412,33 @@ internal sealed class LoginForm : Form
             logo.SetBounds(26, 24, 64, 64);
             parent.Controls.Add(logo);
         }
-        parent.Controls.Add(Label("Flair Messenger", 106, 30, 260, 30, 18, true));
-        parent.Controls.Add(Label($"{AppInfo.Tagline} | v{AppInfo.Version}", 108, 62, 260, 24, 10));
+        var textLayout = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Theme.Bg
+        };
+        textLayout.SetBounds(106, 20, 300, 76);
+        textLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        textLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        textLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+
+        var productName = Label("Flair Messenger", size: 17, bold: true);
+        productName.Dock = DockStyle.Fill;
+        productName.Margin = Padding.Empty;
+        productName.Padding = Padding.Empty;
+        productName.AutoEllipsis = true;
+        textLayout.Controls.Add(productName, 0, 0);
+
+        var productDetails = Label($"{AppInfo.Tagline} | v{AppInfo.Version}", size: 9.5f);
+        productDetails.Dock = DockStyle.Fill;
+        productDetails.Margin = Padding.Empty;
+        productDetails.Padding = Padding.Empty;
+        productDetails.AutoEllipsis = true;
+        textLayout.Controls.Add(productDetails, 0, 1);
+        parent.Controls.Add(textLayout);
     }
 
     internal static Icon AppIcon()
@@ -1891,7 +1937,8 @@ internal sealed class MainForm : Form
 
     private static Button WindowButton(string text, string accessibleName)
     {
-        var button = new Button();
+        var button = accessibleName == "Close" ? new WindowCloseButton() : new Button();
+        if (accessibleName == "Close") text = "";
         button.Text = text;
         StyleWindowButton(button, accessibleName);
         return button;
@@ -1908,7 +1955,7 @@ internal sealed class MainForm : Form
         button.FlatAppearance.MouseDownBackColor = Theme.Panel;
         button.BackColor = Theme.Rail;
         button.ForeColor = Theme.Text;
-        button.Font = accessibleName == "Close" ? Theme.CloseGlyph : Theme.WindowGlyph;
+        button.Font = Theme.WindowGlyph;
         button.TextAlign = ContentAlignment.MiddleCenter;
         button.MinimumSize = accessibleName == "Close" ? new Size(44, 32) : Size.Empty;
         button.TabStop = false;

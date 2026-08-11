@@ -17,14 +17,14 @@ Flair Messenger - Messenger for Second Life provides a focused way to access Sec
 
 The application connects directly to the official Second Life main grid through LibreMetaverse. It supports private conversations, group conversations, friends, notifications and local message history.
 
-Current version: **0.4.26**
+Current version: **0.4.27**
 
 > [!WARNING]
 > Flair Messenger does not currently support MFA/2FA login challenges. An account that requires a second factor during sign-in cannot complete login through this client. Do not disable MFA/2FA solely to use an experimental application. MFA/2FA support is a future goal, but it is not currently prioritized or scheduled while the application remains in development. See [ROADMAP.md](ROADMAP.md).
 
 ## Required third-party viewer disclosure
 
-- **Software:** Flair Messenger 0.4.26.
+- **Software:** Flair Messenger 0.4.27.
 - **Linden Lab status:** This software is not provided or supported by Linden Lab, the makers of Second Life.
 - **Support:** Community assistance may be available through this repository's GitHub issues, but no customer support or response time is guaranteed. Linden Lab does not provide support for Flair Messenger.
 - **Limitations:** Flair Messenger is a text-focused client and does not support MFA/2FA login challenges, the 3D world, voice, inventory, avatar rendering or many other features of the official viewer. Review [Known limitations](#known-limitations) before installation.
