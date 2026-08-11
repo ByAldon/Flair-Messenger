@@ -13,18 +13,18 @@
 
 ## Overview
 
-Flair Messenger (FM) provides a focused way to access Second Life instant messaging without running a full graphical viewer. The interface is inspired by modern chat applications and keeps the most important communication tools together in one compact Windows desktop application.
+Flair Messenger - Messenger for Second Life provides a focused way to access Second Life instant messaging without running a full graphical viewer. The interface is inspired by modern chat applications and keeps the most important communication tools together in one compact Windows desktop application.
 
 The application connects directly to the official Second Life main grid through LibreMetaverse. It supports private conversations, group conversations, friends, notifications and local message history.
 
-Current version: **0.4.14**
+Current version: **0.4.25**
 
 > [!WARNING]
 > Flair Messenger does not currently support MFA/2FA login challenges. An account that requires a second factor during sign-in cannot complete login through this client. Do not disable MFA/2FA solely to use an experimental application. MFA/2FA support is a future goal, but it is not currently prioritized or scheduled while the application remains in development. See [ROADMAP.md](ROADMAP.md).
 
 ## Required third-party viewer disclosure
 
-- **Software:** Flair Messenger 0.4.14.
+- **Software:** Flair Messenger 0.4.25.
 - **Linden Lab status:** This software is not provided or supported by Linden Lab, the makers of Second Life.
 - **Support:** Community assistance may be available through this repository's GitHub issues, but no customer support or response time is guaranteed. Linden Lab does not provide support for Flair Messenger.
 - **Limitations:** Flair Messenger is a text-focused client and does not support MFA/2FA login challenges, the 3D world, voice, inventory, avatar rendering or many other features of the official viewer. Review [Known limitations](#known-limitations) before installation.
@@ -36,14 +36,17 @@ Current version: **0.4.14**
 
 - Sign in to the official Second Life main grid.
 - Require acceptance of the current Second Life terms and third-party viewer policies before login.
-- Use `Home` or `Last location` as the login destination.
+- Use `Home`, `Last location`, a region name or a pasted Second Life SLURL as the login destination.
 - Accept account names in `First Last` or `first.last` format.
 - Automatically use `Resident` for accounts without a last name.
-- Optionally remember the login name, password and login location.
+- Optionally remember multiple accounts, each with its own password, login location and terms preference.
+- Select a saved account from the editable Login name drop-down.
 - Show an animated progress bar and live status while signing in.
 - Use an integrated dark title bar with native-style window controls, dragging, maximizing and edge resizing.
 - Receive and send private instant messages.
 - Receive and send group instant messages.
+- Close private and group conversations without deleting their local message history.
+- Render older chat history in muted gray while keeping new messages bright.
 - Route group and session messages by their Second Life chat-session ID instead of placing them under the sending avatar's private IM.
 - Label recent conversations as `Group:` or `Private IM:` and show the conversation type in the chat header.
 - Show only conversations with message activity during the last 24 hours in the recent Chats list.
@@ -60,6 +63,7 @@ Current version: **0.4.14**
 - Keep locally encrypted chat history between sessions.
 - Collect in-app notifications for the current session.
 - Minimize to the Windows system tray.
+- Choose in Settings whether minimizing sends the client to the system tray or keeps it on the Windows taskbar.
 - Sign the avatar out before the application closes.
 - Run from a movable folder without an installer.
 - Start through a simple BAT launcher.
@@ -72,7 +76,7 @@ The left navigation rail contains the following pages:
 - **Friends** - Lists friends and shows whether they are online or offline. Double-click a friend to open a conversation.
 - **Groups** - Lists current groups. Double-click a group to open its conversation.
 - **Notifications** - Shows notifications generated during the current session.
-- **Settings** - Displays the active account and basic storage information.
+- **Settings** - Configures client behaviour and displays the active account and basic storage information.
 - **About** - Displays application and version information.
 
 ## System requirements
@@ -104,11 +108,11 @@ No installer is required. The extracted application folder can be moved to anoth
 
 Enter the following information on the login screen:
 
-- **Login name** - Use `First Last`, `first.last` or a single account name. A single name automatically receives the last name `Resident`.
+- **Login name** - Use `First Last`, `first.last` or a single account name. A single name automatically receives the last name `Resident`. When accounts have been remembered, select one from this editable drop-down or type a new name.
 - **Password** - The password belonging to the Second Life account.
-- **Login location** - Select `Home` or `Last location`.
-- **Remember details** - Saves the entered login details locally for the next session.
-- **Terms acceptance** - Confirms that the user accepts the current Second Life terms and policies. This confirmation is required again whenever Flair Messenger is started.
+- **Login location** - Select `Home` or `Last location`, type a region name, enter `Region name/X/Y/Z`, or paste an official Second Life location link such as `https://maps.secondlife.com/secondlife/Region%20Name/128/128/25` or `secondlife://Region%20Name/128/128/25`. Missing coordinates default to the region centre. Normal web links and `secondlife:///app/...` application links are rejected.
+- **Remember details** - After a successful login, saves or updates the current account profile locally. Each remembered account keeps its own password, login location and terms preference. Unchecking it for a saved account forgets that account only after a successful login; a failed login never deletes saved credentials.
+- **Terms acceptance** - Confirms that the user accepts the current Second Life terms and policies. When **Remember details** is enabled, this checkbox is restored separately for that account on later starts. Without **Remember details**, it must be selected again after restarting Flair Messenger.
 
 After selecting **Login**, the button is disabled and an animated progress bar displays the current connection stage. Flair Messenger requests offline instant messages and group information after a successful login.
 
@@ -119,6 +123,16 @@ Flair Messenger cannot currently complete a login flow that asks for a multi-fac
 MFA/2FA support is included as a future objective in [ROADMAP.md](ROADMAP.md). It has no promised release date and is not a current development priority while the client is still under active development.
 
 ## Using conversations
+
+### Closing and reopening chats
+
+- Select a private or group conversation and choose **Close chat** in its header.
+- The conversation disappears from **Conversations**, but its encrypted local message history is not deleted.
+- Messages saved before the current session, and messages sent or received before **Close chat** was selected, use muted gray text when the conversation is reopened. New messages remain bright.
+- A new incoming message automatically reopens the conversation.
+- Reopen a private chat by double-clicking the person in **Friends**, or reopen a group chat by double-clicking it in **Groups**.
+- For remembered accounts, closed conversations remain closed after restarting Flair Messenger. For accounts used without **Remember details**, the closed state lasts for the current session only so the application does not retain an extra account identifier.
+- The **System** conversation cannot be closed because it contains connection and application status messages.
 
 ### Private messages
 
@@ -133,6 +147,14 @@ MFA/2FA support is included as a future objective in [ROADMAP.md](ROADMAP.md). I
 2. Double-click a group.
 3. Enter a message in the field at the bottom of the chat.
 4. Select **Send** or press Enter.
+
+## Client settings
+
+Open **Settings** from the navigation rail to change client behaviour.
+
+- **Minimize to system tray** is enabled by default. Minimizing hides the client from the taskbar and keeps it available through the notification-area icon.
+- Disable it to use normal Windows minimization. Flair Messenger then remains visible on the taskbar and does not move to the notification area.
+- The preference is saved immediately in the encrypted local settings file and applies to every account using this copy of Flair Messenger.
 
 Before the first message is sent, the Send button displays **Joining...** while Flair Messenger opens the required Second Life group-chat session. Later messages reuse that session. If Second Life refuses or times out, the reason is displayed inside the group conversation and the typed message remains available for another attempt.
 
@@ -166,7 +188,7 @@ Flair Messenger creates a `data` folder next to `Start-FlairMessenger.bat` when 
 
 | File | Purpose | Protection |
 | --- | --- | --- |
-| `data/settings.dat` | Remembered login name, password, location and preference | The complete file is encrypted with Windows DPAPI for the current Windows user |
+| `data/settings.dat` | Client preferences, remembered account profiles, passwords, login locations, selected account, per-account terms preferences, closed-conversation identifiers and history cut-off times | The complete file is encrypted with Windows DPAPI for the current Windows user |
 | `data/messages.dat` | Local conversation history | The complete file is encrypted with Windows DPAPI for the current Windows user |
 | `data/launcher.log` | Output and errors from the hidden launcher process | Plain text |
 
@@ -330,6 +352,86 @@ This is expected. Minimizing sends Flair Messenger to the system tray so it can 
 - Windows Data Protection API for remembered passwords
 
 ## Version history
+
+### 0.4.25
+
+- Enlarges the close glyph in the custom title bars to a standard, clearly visible size.
+- Keeps a centered close button with a minimum 44 x 32 pixel click area in both application windows.
+
+### 0.4.24
+
+- Keeps the complete integrated window title on a single line in the login window.
+- Prevents title text from dropping below the title bar under Windows DPI or font scaling.
+- Applies the same single-line title protection to the main client window.
+
+### 0.4.23
+
+- Preserves every message when **Close chat** is used.
+- Displays message history from previous sessions in muted gray.
+- Marks messages from before the most recent **Close chat** action as older history when the conversation is reopened.
+- Keeps newly received or sent messages bright so the history boundary is visually clear.
+- Stores per-conversation history cut-off times with remembered account settings inside the encrypted settings file.
+
+### 0.4.22
+
+- Replaced the static Settings information page with a client-preferences page.
+- Added a **Minimize to system tray** checkbox that is enabled by default.
+- Keeps the client on the Windows taskbar when the preference is disabled.
+- Applies the choice immediately and stores it inside the existing DPAPI-encrypted `settings.dat` file.
+- Treats this as a client-wide preference shared by all accounts in the same application folder.
+
+### 0.4.21
+
+- Added a **Close chat** action to private and group conversation headers.
+- Hides a closed conversation without deleting its encrypted message history.
+- Automatically reopens a closed conversation when a new message arrives.
+- Reopens chats deliberately selected from Friends or Groups.
+- Remembers closed conversations separately for each remembered account while keeping the state session-only for unremembered accounts.
+- Keeps the System conversation available for connection and application status messages.
+
+### 0.4.20
+
+- Made Login location editable while keeping the Home and Last location choices.
+- Accepts pasted `maps.secondlife.com`, `slurl.com` and `secondlife://` location SLURLs.
+- Accepts a region name or `Region/X/Y/Z` directly and fills in safe default coordinates when omitted.
+- Validates the destination locally and shows an English error before login for unsupported links or invalid coordinates.
+- Remembers each account's normalized custom login location inside the encrypted account profile.
+- Shows the custom destination in the client Settings and System conversation header.
+
+### 0.4.19
+
+- Added support for remembering multiple Second Life accounts.
+- Changed Login name into an editable account drop-down that switches the saved password, login location and terms preference.
+- Migrates the previously remembered single account into the new profile list automatically.
+- Adds, updates or forgets an account only after a successful login, so a failed attempt never removes saved credentials.
+- Keeps all remembered profiles inside the existing Windows DPAPI-encrypted `settings.dat` file.
+
+### 0.4.18
+
+- Replaced the white native title bar on the login screen with a matching integrated dark title bar.
+- Added matching minimize and close controls to the login window.
+- Allows the login window to be moved by dragging its integrated title bar.
+
+### 0.4.17
+
+- Removed the redundant two-letter abbreviation from the visible interface and documentation.
+- Uses **Flair Messenger - Messenger for Second Life** as the complete product title.
+- Shows **Flair Messenger** as the sender of application status and error messages.
+- Renames previously stored abbreviated application messages to **Flair Messenger** without changing user messages.
+
+### 0.4.16
+
+- Remembers the terms-acceptance checkbox when **Remember details** is enabled.
+- Restores the saved acceptance and enables Login on later starts.
+- Does not retain terms acceptance when **Remember details** is disabled.
+- Stores only a boolean acceptance preference inside the existing DPAPI-encrypted `settings.dat` file.
+
+### 0.4.15
+
+- Standardized the login screen on Segoe UI typography and consistent vertical text alignment.
+- Fixed the disabled Login button text being rendered too dark to read.
+- Applied the dark theme to the Login location selector and its drop-down items.
+- Kept the Login button disabled until the required terms checkbox is selected.
 
 ### 0.4.14
 

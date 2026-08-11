@@ -20,8 +20,10 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.14";
+    public const string Version = "0.4.25";
     public const string Name = "Flair Messenger";
+    public const string Tagline = "Messenger for Second Life";
+    public const string ProductTitle = Name + " - " + Tagline;
     public const string UserAgent = Name + " " + Version;
 }
 
@@ -31,6 +33,146 @@ internal sealed class AppSettings
     public string LoginName { get; set; } = "";
     public string Password { get; set; } = "";
     public string Location { get; set; } = "last";
+    public bool TermsAccepted { get; set; }
+    public string SelectedLoginName { get; set; } = "";
+    public List<RememberedAccount> Accounts { get; set; } = [];
+    public bool MinimizeToTray { get; set; } = true;
+}
+
+internal sealed class RememberedAccount
+{
+    public string LoginName { get; set; } = "";
+    public string Password { get; set; } = "";
+    public string Location { get; set; } = "last";
+    public bool TermsAccepted { get; set; }
+    public List<string> ClosedConversationIds { get; set; } = [];
+    public Dictionary<string, DateTime> ConversationHistoryCutoffs { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+internal readonly record struct ParsedLoginLocation(string StoredValue, string StartValue, string DisplayText);
+
+internal static class LoginLocationParser
+{
+    private const string HelpText = "Enter Home, Last location, a region name, or a valid Second Life SLURL.";
+    private static readonly HashSet<string> SlurlHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "maps.secondlife.com",
+        "slurl.com",
+        "www.slurl.com"
+    };
+
+    public static bool TryParse(string? input, out ParsedLoginLocation location, out string error)
+    {
+        location = default;
+        error = "";
+        var value = input?.Trim() ?? "";
+        if (value.Equals("home", StringComparison.OrdinalIgnoreCase))
+        {
+            location = new ParsedLoginLocation("home", "home", "Home");
+            return true;
+        }
+        if (value.Equals("last", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("last location", StringComparison.OrdinalIgnoreCase))
+        {
+            location = new ParsedLoginLocation("last", "last", "Last location");
+            return true;
+        }
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = HelpText;
+            return false;
+        }
+
+        if (value.StartsWith("uri:", StringComparison.OrdinalIgnoreCase))
+        {
+            var legacyParts = value[4..].Split('&', StringSplitOptions.TrimEntries);
+            return TryBuildLocation(legacyParts, out location, out error);
+        }
+
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            if (uri.Scheme.Equals("secondlife", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(uri.Host)) parts.Add(Uri.UnescapeDataString(uri.Host));
+                parts.AddRange(uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(Uri.UnescapeDataString));
+                if (parts.Count > 0 && parts[0].Equals("app", StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "Application links are not login locations. Paste a location SLURL instead.";
+                    return false;
+                }
+                return TryBuildLocation(parts, out location, out error);
+            }
+
+            if (uri.Scheme is "http" or "https")
+            {
+                if (!SlurlHosts.Contains(uri.Host))
+                {
+                    error = "Only Second Life location links from maps.secondlife.com or slurl.com are accepted.";
+                    return false;
+                }
+                var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(Uri.UnescapeDataString)
+                    .ToList();
+                if (parts.Count == 0 || !parts[0].Equals("secondlife", StringComparison.OrdinalIgnoreCase))
+                {
+                    error = HelpText;
+                    return false;
+                }
+                return TryBuildLocation(parts.Skip(1), out location, out error);
+            }
+
+            error = HelpText;
+            return false;
+        }
+
+        return TryBuildLocation(value.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            out location, out error);
+    }
+
+    public static string NormalizeStoredLocation(string? value) =>
+        TryParse(value, out var location, out _) ? location.StoredValue : "last";
+
+    public static string Display(string? value) =>
+        TryParse(value, out var location, out _) ? location.DisplayText : "Last location";
+
+    private static bool TryBuildLocation(IEnumerable<string> rawParts, out ParsedLoginLocation location, out string error)
+    {
+        location = default;
+        error = "";
+        var parts = rawParts.Select(part => part.Trim()).Where(part => part.Length > 0).ToArray();
+        if (parts.Length is < 1 or > 4)
+        {
+            error = HelpText;
+            return false;
+        }
+
+        var region = Uri.UnescapeDataString(parts[0]).Trim();
+        if (region.Length is < 1 or > 255 || region.Contains('&') || region.Any(char.IsControl))
+        {
+            error = "The SLURL contains an invalid region name.";
+            return false;
+        }
+
+        var coordinates = new[] { 128, 128, 0 };
+        for (var index = 1; index < parts.Length; index++)
+        {
+            if (!int.TryParse(parts[index], out var coordinate) || coordinate < 0 || coordinate > 65535)
+            {
+                error = "SLURL coordinates must be whole numbers between 0 and 65535.";
+                return false;
+            }
+            coordinates[index - 1] = coordinate;
+        }
+
+        var rawLocation = $"{region}/{coordinates[0]}/{coordinates[1]}/{coordinates[2]}";
+        location = new ParsedLoginLocation(
+            rawLocation,
+            $"uri:{region}&{coordinates[0]}&{coordinates[1]}&{coordinates[2]}",
+            rawLocation);
+        return true;
+    }
 }
 
 internal sealed class ChatRecord
@@ -56,17 +198,121 @@ internal static class Store
     public static AppSettings ReadSettings()
     {
         if (File.Exists(SettingsPath))
-            return ReadProtected(SettingsPath, new AppSettings());
+            return NormalizeSettings(ReadProtected(SettingsPath, new AppSettings()));
 
         var settings = ReadJson(LegacySettingsPath, new AppSettings());
-        if (!File.Exists(LegacySettingsPath)) return settings;
+        if (!File.Exists(LegacySettingsPath)) return NormalizeSettings(settings);
 
         settings.Password = UnprotectLegacyPassword(settings.Password);
+        settings = NormalizeSettings(settings);
         TryMigrate(LegacySettingsPath, SettingsPath, settings);
         return settings;
     }
 
-    public static void WriteSettings(AppSettings settings) => WriteProtected(SettingsPath, settings);
+    public static void WriteSettings(AppSettings settings) => WriteProtected(SettingsPath, NormalizeSettings(settings));
+
+    public static void SaveClientPreferences(bool minimizeToTray)
+    {
+        var settings = ReadSettings();
+        settings.MinimizeToTray = minimizeToTray;
+        WriteSettings(settings);
+    }
+
+    public static void SaveSuccessfulLogin(string loginName, string password, string location, bool remember, bool termsAccepted)
+    {
+        var settings = ReadSettings();
+        var existingIndex = settings.Accounts.FindIndex(account =>
+            account.LoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase));
+
+        if (remember)
+        {
+            var closedConversationIds = existingIndex >= 0
+                ? settings.Accounts[existingIndex].ClosedConversationIds
+                : [];
+            var historyCutoffs = existingIndex >= 0
+                ? settings.Accounts[existingIndex].ConversationHistoryCutoffs
+                : new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            var account = new RememberedAccount
+            {
+                LoginName = loginName.Trim(),
+                Password = password,
+                Location = LoginLocationParser.NormalizeStoredLocation(location),
+                TermsAccepted = termsAccepted,
+                ClosedConversationIds = closedConversationIds,
+                ConversationHistoryCutoffs = historyCutoffs
+            };
+            if (existingIndex >= 0) settings.Accounts[existingIndex] = account;
+            else settings.Accounts.Add(account);
+            settings.SelectedLoginName = account.LoginName;
+        }
+        else if (existingIndex >= 0)
+        {
+            settings.Accounts.RemoveAt(existingIndex);
+            if (settings.SelectedLoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase))
+                settings.SelectedLoginName = settings.Accounts.FirstOrDefault()?.LoginName ?? "";
+        }
+
+        // Clear the legacy single-account projection before normalization. Otherwise an
+        // account that was just forgotten could be mistaken for data that still needs migration.
+        settings.Remember = false;
+        settings.LoginName = "";
+        settings.Password = "";
+        settings.Location = "last";
+        settings.TermsAccepted = false;
+        WriteSettings(settings);
+    }
+
+    public static IReadOnlyCollection<string> ReadClosedConversationIds(string loginName)
+    {
+        var account = ReadSettings().Accounts.FirstOrDefault(candidate =>
+            candidate.LoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase));
+        return account?.ClosedConversationIds.ToArray() ?? [];
+    }
+
+    public static void WriteClosedConversationIds(string loginName, IEnumerable<string> conversationIds)
+    {
+        var settings = ReadSettings();
+        var account = settings.Accounts.FirstOrDefault(candidate =>
+            candidate.LoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase));
+        if (account is null) return;
+
+        account.ClosedConversationIds = conversationIds
+            .Where(id => !string.IsNullOrWhiteSpace(id) && !id.Equals("system", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        WriteSettings(settings);
+    }
+
+    public static IReadOnlyDictionary<string, DateTime> ReadConversationHistoryCutoffs(string loginName)
+    {
+        var account = ReadSettings().Accounts.FirstOrDefault(candidate =>
+            candidate.LoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase));
+        return account is null
+            ? new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, DateTime>(account.ConversationHistoryCutoffs, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static void WriteConversationState(
+        string loginName,
+        IEnumerable<string> closedConversationIds,
+        IReadOnlyDictionary<string, DateTime> historyCutoffs)
+    {
+        var settings = ReadSettings();
+        var account = settings.Accounts.FirstOrDefault(candidate =>
+            candidate.LoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase));
+        if (account is null) return;
+
+        account.ClosedConversationIds = closedConversationIds
+            .Where(id => !string.IsNullOrWhiteSpace(id) && !id.Equals("system", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        account.ConversationHistoryCutoffs = historyCutoffs
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Key) &&
+                !pair.Key.Equals("system", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.OrdinalIgnoreCase);
+        WriteSettings(settings);
+    }
 
     public static List<ChatRecord> ReadMessages()
     {
@@ -145,6 +391,58 @@ internal static class Store
         }
         catch { return ""; }
     }
+
+    private static AppSettings NormalizeSettings(AppSettings settings)
+    {
+        settings.Accounts ??= [];
+
+        if (settings.Remember && !string.IsNullOrWhiteSpace(settings.LoginName) &&
+            !settings.Accounts.Any(account => account.LoginName.Equals(settings.LoginName, StringComparison.OrdinalIgnoreCase)))
+        {
+            settings.Accounts.Add(new RememberedAccount
+            {
+                LoginName = settings.LoginName.Trim(),
+                Password = settings.Password,
+                Location = LoginLocationParser.NormalizeStoredLocation(settings.Location),
+                TermsAccepted = settings.TermsAccepted
+            });
+        }
+
+        var uniqueAccounts = new List<RememberedAccount>();
+        foreach (var account in settings.Accounts.Where(account => !string.IsNullOrWhiteSpace(account.LoginName)))
+        {
+            account.LoginName = account.LoginName.Trim();
+            account.Location = LoginLocationParser.NormalizeStoredLocation(account.Location);
+            account.ClosedConversationIds = (account.ClosedConversationIds ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id) && !id.Equals("system", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            account.ConversationHistoryCutoffs = (account.ConversationHistoryCutoffs ?? new Dictionary<string, DateTime>())
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Key) &&
+                    !pair.Key.Equals("system", StringComparison.OrdinalIgnoreCase))
+                .GroupBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.OrdinalIgnoreCase);
+            var duplicateIndex = uniqueAccounts.FindIndex(existing =>
+                existing.LoginName.Equals(account.LoginName, StringComparison.OrdinalIgnoreCase));
+            if (duplicateIndex >= 0) uniqueAccounts[duplicateIndex] = account;
+            else uniqueAccounts.Add(account);
+        }
+        settings.Accounts = uniqueAccounts;
+
+        var selected = settings.Accounts.FirstOrDefault(account =>
+                account.LoginName.Equals(settings.SelectedLoginName, StringComparison.OrdinalIgnoreCase))
+            ?? settings.Accounts.FirstOrDefault(account =>
+                account.LoginName.Equals(settings.LoginName, StringComparison.OrdinalIgnoreCase))
+            ?? settings.Accounts.FirstOrDefault();
+
+        settings.Remember = selected is not null;
+        settings.SelectedLoginName = selected?.LoginName ?? "";
+        settings.LoginName = selected?.LoginName ?? "";
+        settings.Password = selected?.Password ?? "";
+        settings.Location = selected?.Location ?? "last";
+        settings.TermsAccepted = selected?.TermsAccepted ?? false;
+        return settings;
+    }
 }
 
 internal static class Theme
@@ -156,8 +454,37 @@ internal static class Theme
     public static readonly Color Accent = Color.FromArgb(88, 101, 242);
     public static readonly Color Text = Color.FromArgb(242, 243, 245);
     public static readonly Color Muted = Color.FromArgb(181, 186, 193);
+    public static readonly Color HistoryText = Color.FromArgb(151, 155, 162);
     public static readonly Font Font = new("Segoe UI", 10);
     public static readonly Font Bold = new("Segoe UI", 10, FontStyle.Bold);
+    public static readonly Font WindowGlyph = new("Segoe UI Symbol", 11);
+    public static readonly Font CloseGlyph = new("Segoe UI", 15);
+}
+
+internal sealed class ThemedButton : Button
+{
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        if (Enabled)
+        {
+            base.OnPaint(e);
+            return;
+        }
+
+        var disabledBackground = Color.FromArgb(70, 76, 150);
+        var disabledBorder = Color.FromArgb(94, 101, 180);
+        var disabledText = Color.FromArgb(218, 221, 238);
+        e.Graphics.Clear(disabledBackground);
+        using var border = new Pen(disabledBorder);
+        e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, ClientSize.Width - 1), Math.Max(0, ClientSize.Height - 1));
+        TextRenderer.DrawText(
+            e.Graphics,
+            Text,
+            Font,
+            ClientRectangle,
+            disabledText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+    }
 }
 
 internal sealed class SecondLifeService : IDisposable
@@ -294,10 +621,13 @@ internal sealed class SecondLifeService : IDisposable
 
     public async Task<(bool Success, string Message)> LoginAsync(string loginName, string password, string start, CancellationToken token)
     {
+        if (!LoginLocationParser.TryParse(start, out var loginLocation, out var locationError))
+            return (false, locationError);
+
         var parts = SplitLoginName(loginName);
         Status?.Invoke("Signing in to Second Life...");
         var loginParams = _client.Network.DefaultLoginParams(parts.First, parts.Last, password, AppInfo.Name, AppInfo.Version);
-        loginParams.Start = start.Equals("home", StringComparison.OrdinalIgnoreCase) ? "home" : "last";
+        loginParams.Start = loginLocation.StartValue;
         loginParams.URI = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";
         loginParams.UserAgent = AppInfo.UserAgent;
         if (!loginParams.Options.Contains("buddy-list", StringComparer.OrdinalIgnoreCase))
@@ -579,11 +909,17 @@ internal sealed class LoginForm : Form
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr handle);
 
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam);
+
     private const string SecondLifeTermsUrl = "https://lindenlab.com/legal/second-life-terms-and-conditions";
     private const string ThirdPartyViewerPolicyUrl = "https://secondlife.com/corporate/third-party-viewers";
     private const string LindenPrivacyUrl = "https://lindenlab.com/privacy";
 
-    private readonly TextBox _login = Box();
+    private readonly ComboBox _login = new();
     private readonly TextBox _password = Box();
     private readonly ComboBox _location = new();
     private readonly CheckBox _remember = new();
@@ -591,6 +927,9 @@ internal sealed class LoginForm : Form
     private readonly Button _loginButton = Button("Login");
     private readonly CheckBox _termsAccepted = new();
     private readonly LinkLabel _policyLinks = new();
+    private readonly Panel _loginBody = new();
+    private readonly List<RememberedAccount> _rememberedAccounts = [];
+    private bool _loadingRememberedAccount;
     private readonly ProgressBar _loginProgress = new()
     {
         Style = ProgressBarStyle.Marquee,
@@ -600,65 +939,287 @@ internal sealed class LoginForm : Form
 
     public LoginForm()
     {
-        Text = "Flair Messenger Login";
+        Text = AppInfo.ProductTitle;
         Size = new Size(440, 525);
         MaximizeBox = false;
-        FormBorderStyle = FormBorderStyle.FixedSingle;
+        FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
+        Padding = new Padding(1);
         BackColor = Theme.Bg;
         ForeColor = Theme.Text;
         Icon = AppIcon();
 
-        var settings = Store.ReadSettings();
-        if (settings.Remember)
-        {
-            _login.Text = settings.LoginName;
-            _password.Text = settings.Password;
-            _remember.Checked = true;
-        }
+        BuildWindowChrome();
 
-        AddHeader(this);
+        var settings = Store.ReadSettings();
+
+        AddHeader(_loginBody);
+        ConfigureLoginSelector();
         Add(Label("Login name:", 32, 112), _login, 32, 138, 350);
         Add(Label("Password:", 32, 180), _password, 32, 206, 350);
         _password.UseSystemPasswordChar = true;
 
-        Controls.Add(Label("Login location:", 32, 248));
+        _loginBody.Controls.Add(Label("Login location:", 32, 248));
         _location.SetBounds(32, 274, 350, 30);
-        _location.DropDownStyle = ComboBoxStyle.DropDownList;
+        _location.DropDownStyle = ComboBoxStyle.DropDown;
+        _location.DrawMode = DrawMode.OwnerDrawFixed;
+        _location.FlatStyle = FlatStyle.Flat;
+        _location.ItemHeight = 24;
+        _location.Font = Theme.Font;
         _location.BackColor = Theme.Input;
         _location.ForeColor = Theme.Text;
+        _location.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+        _location.AutoCompleteSource = AutoCompleteSource.ListItems;
+        _location.DrawItem += DrawLocationItem;
         _location.Items.AddRange(["Home", "Last location"]);
-        _location.SelectedIndex = settings.Location == "home" ? 0 : 1;
-        Controls.Add(_location);
+        _location.SelectedIndex = 1;
+        _loginBody.Controls.Add(_location);
 
         _remember.Text = "Remember details";
         _remember.SetBounds(32, 316, 180, 28);
+        _remember.Font = Theme.Font;
         _remember.ForeColor = Theme.Muted;
         _remember.BackColor = Theme.Bg;
-        Controls.Add(_remember);
+        _remember.TextAlign = ContentAlignment.MiddleLeft;
+        _loginBody.Controls.Add(_remember);
 
         _loginButton.SetBounds(246, 316, 136, 36);
-        _loginButton.Enabled = false;
+        _loginButton.Enabled = _termsAccepted.Checked;
         _loginButton.Click += LoginClicked;
-        Controls.Add(_loginButton);
+        _loginBody.Controls.Add(_loginButton);
 
         _termsAccepted.Text = "I accept the current Second Life terms and policies.";
         _termsAccepted.SetBounds(32, 358, 350, 28);
+        _termsAccepted.Font = Theme.Font;
         _termsAccepted.ForeColor = Theme.Muted;
         _termsAccepted.BackColor = Theme.Bg;
+        _termsAccepted.TextAlign = ContentAlignment.MiddleLeft;
         _termsAccepted.CheckedChanged += (_, _) => _loginButton.Enabled = _termsAccepted.Checked;
-        Controls.Add(_termsAccepted);
+        _loginBody.Controls.Add(_termsAccepted);
 
         ConfigurePolicyLinks();
         _policyLinks.SetBounds(32, 390, 350, 24);
-        Controls.Add(_policyLinks);
+        _loginBody.Controls.Add(_policyLinks);
 
         _loginProgress.SetBounds(32, 425, 350, 8);
-        Controls.Add(_loginProgress);
+        _loginBody.Controls.Add(_loginProgress);
 
         _error.SetBounds(32, 441, 350, 36);
         _error.ForeColor = Color.FromArgb(248, 113, 113);
-        Controls.Add(_error);
+        _loginBody.Controls.Add(_error);
+
+        LoadRememberedAccounts(settings);
+    }
+
+    private void ConfigureLoginSelector()
+    {
+        _login.DropDownStyle = ComboBoxStyle.DropDown;
+        _login.DrawMode = DrawMode.OwnerDrawFixed;
+        _login.FlatStyle = FlatStyle.Flat;
+        _login.ItemHeight = 24;
+        _login.Font = new Font("Segoe UI", 11);
+        _login.BackColor = Theme.Input;
+        _login.ForeColor = Theme.Text;
+        _login.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+        _login.AutoCompleteSource = AutoCompleteSource.ListItems;
+        _login.DrawItem += DrawLoginItem;
+        _login.SelectedIndexChanged += (_, _) => LoadSelectedAccount();
+        _login.TextUpdate += (_, _) => LoginNameEdited();
+    }
+
+    private void LoadRememberedAccounts(AppSettings settings)
+    {
+        _rememberedAccounts.Clear();
+        _rememberedAccounts.AddRange(settings.Accounts);
+        _login.Items.Clear();
+        _login.Items.AddRange(_rememberedAccounts.Select(account => account.LoginName).Cast<object>().ToArray());
+
+        var selectedIndex = _rememberedAccounts.FindIndex(account =>
+            account.LoginName.Equals(settings.SelectedLoginName, StringComparison.OrdinalIgnoreCase));
+        if (selectedIndex < 0 && _rememberedAccounts.Count > 0) selectedIndex = 0;
+        if (selectedIndex >= 0) _login.SelectedIndex = selectedIndex;
+    }
+
+    private void LoadSelectedAccount()
+    {
+        if (_login.SelectedIndex < 0 || _login.SelectedIndex >= _rememberedAccounts.Count) return;
+        var account = _rememberedAccounts[_login.SelectedIndex];
+        _loadingRememberedAccount = true;
+        try
+        {
+            _login.Text = account.LoginName;
+            _password.Text = account.Password;
+            if (account.Location == "home") _location.SelectedIndex = 0;
+            else if (account.Location == "last") _location.SelectedIndex = 1;
+            else
+            {
+                _location.SelectedIndex = -1;
+                _location.Text = account.Location;
+            }
+            _remember.Checked = true;
+            _termsAccepted.Checked = account.TermsAccepted;
+        }
+        finally
+        {
+            _loadingRememberedAccount = false;
+        }
+    }
+
+    private void LoginNameEdited()
+    {
+        if (_loadingRememberedAccount) return;
+
+        var exactIndex = _rememberedAccounts.FindIndex(account =>
+            account.LoginName.Equals(_login.Text.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (exactIndex >= 0)
+        {
+            _login.SelectedIndex = exactIndex;
+            return;
+        }
+
+        _password.Clear();
+        _location.SelectedIndex = 1;
+        _remember.Checked = false;
+        _termsAccepted.Checked = false;
+    }
+
+    private void BuildWindowChrome()
+    {
+        var windowLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Theme.Bg
+        };
+        windowLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        windowLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        windowLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        Controls.Add(windowLayout);
+
+        var titleBar = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Rail };
+        windowLayout.Controls.Add(titleBar, 0, 0);
+
+        var titleLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Theme.Rail
+        };
+        titleLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+        titleLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        titleLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+        titleLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        titleBar.Controls.Add(titleLayout);
+
+        var iconHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10, 8, 8, 8),
+            Margin = Padding.Empty,
+            BackColor = Theme.Rail
+        };
+        var icon = new PictureBox
+        {
+            Dock = DockStyle.Fill,
+            Image = LoadImageCopy(Store.IconPath),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            Margin = Padding.Empty,
+            BackColor = Theme.Rail
+        };
+        iconHost.Controls.Add(icon);
+        titleLayout.Controls.Add(iconHost, 0, 0);
+
+        var title = Label(AppInfo.ProductTitle, 0, 0, 300, 42, 9);
+        title.Dock = DockStyle.Fill;
+        title.Margin = new Padding(0, 9, 0, 9);
+        title.Padding = new Padding(2, 0, 0, 0);
+        title.AutoSize = false;
+        title.AutoEllipsis = true;
+        title.ForeColor = Theme.Muted;
+        title.BackColor = Theme.Rail;
+        titleLayout.Controls.Add(title, 1, 0);
+
+        var windowButtons = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Theme.Rail
+        };
+        windowButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        windowButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        windowButtons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        titleLayout.Controls.Add(windowButtons, 2, 0);
+
+        var minimize = WindowButton("—", "Minimize");
+        var close = WindowButton("×", "Close");
+        close.FlatAppearance.MouseOverBackColor = Color.FromArgb(196, 43, 28);
+        close.FlatAppearance.MouseDownBackColor = Color.FromArgb(160, 32, 24);
+        minimize.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        close.Click += (_, _) => Close();
+        windowButtons.Controls.Add(minimize, 0, 0);
+        windowButtons.Controls.Add(close, 1, 0);
+
+        foreach (var dragSurface in new Control[] { titleBar, titleLayout, iconHost, icon, title })
+            dragSurface.MouseDown += BeginWindowDrag;
+
+        _loginBody.Dock = DockStyle.Fill;
+        _loginBody.Margin = Padding.Empty;
+        _loginBody.BackColor = Theme.Bg;
+        windowLayout.Controls.Add(_loginBody, 0, 1);
+    }
+
+    private static Image? LoadImageCopy(string path)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            using var source = Image.FromFile(path);
+            return new Bitmap(source);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Button WindowButton(string text, string accessibleName)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.Rail,
+            ForeColor = Theme.Text,
+            Font = accessibleName == "Close" ? Theme.CloseGlyph : Theme.WindowGlyph,
+            TextAlign = ContentAlignment.MiddleCenter,
+            MinimumSize = accessibleName == "Close" ? new Size(44, 32) : Size.Empty,
+            TabStop = false,
+            UseVisualStyleBackColor = false,
+            AccessibleName = accessibleName
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = Theme.Input;
+        button.FlatAppearance.MouseDownBackColor = Theme.Panel;
+        return button;
+    }
+
+    private void BeginWindowDrag(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        ReleaseCapture();
+        SendMessage(Handle, 0x00A1, (IntPtr)2, IntPtr.Zero);
     }
 
     private async void LoginClicked(object? sender, EventArgs e)
@@ -675,23 +1236,27 @@ internal sealed class LoginForm : Form
             return;
         }
 
+        if (!LoginLocationParser.TryParse(_location.Text, out var parsedLocation, out var locationError))
+        {
+            _error.ForeColor = Color.FromArgb(248, 113, 113);
+            _error.Text = locationError;
+            return;
+        }
+
         _loginButton.Enabled = false;
         _loginProgress.Visible = true;
         _error.ForeColor = Theme.Muted;
         _error.Text = "Connecting to Second Life...";
 
-        var settings = new AppSettings
-        {
-            Remember = _remember.Checked,
-            LoginName = _remember.Checked ? _login.Text.Trim() : "",
-            Password = _remember.Checked ? _password.Text : "",
-            Location = _location.SelectedIndex == 0 ? "home" : "last"
-        };
-        Store.WriteSettings(settings);
+        var loginName = _login.Text.Trim();
+        var password = _password.Text;
+        var location = parsedLocation.StoredValue;
+        var remember = _remember.Checked;
+        var termsAccepted = _termsAccepted.Checked;
 
         var service = new SecondLifeService();
         service.Status += UpdateLoginStatus;
-        var result = await service.LoginAsync(_login.Text, _password.Text, settings.Location, CancellationToken.None);
+        var result = await service.LoginAsync(loginName, password, location, CancellationToken.None);
         service.Status -= UpdateLoginStatus;
         if (!result.Success)
         {
@@ -703,9 +1268,18 @@ internal sealed class LoginForm : Form
             return;
         }
 
+        try
+        {
+            Store.SaveSuccessfulLogin(loginName, password, location, remember, termsAccepted);
+        }
+        catch
+        {
+            // A local storage failure must not terminate an authenticated session.
+        }
+
         _error.Text = "Opening Flair Messenger...";
         Hide();
-        var mainForm = new MainForm(service, _login.Text.Trim(), settings.Location);
+        var mainForm = new MainForm(service, loginName, location);
         mainForm.FormClosed += (_, _) => Close();
         mainForm.Show();
     }
@@ -725,6 +1299,8 @@ internal sealed class LoginForm : Form
     private void ConfigurePolicyLinks()
     {
         _policyLinks.Text = "Terms | Third-Party Viewer Policy | Privacy";
+        _policyLinks.Font = Theme.Font;
+        _policyLinks.TextAlign = ContentAlignment.MiddleLeft;
         _policyLinks.LinkColor = Color.FromArgb(147, 197, 253);
         _policyLinks.ActiveLinkColor = Color.White;
         _policyLinks.VisitedLinkColor = _policyLinks.LinkColor;
@@ -734,6 +1310,49 @@ internal sealed class LoginForm : Form
         _policyLinks.Links.Add(8, 25, ThirdPartyViewerPolicyUrl);
         _policyLinks.Links.Add(36, 7, LindenPrivacyUrl);
         _policyLinks.LinkClicked += (_, e) => OpenPolicyLink(e.Link?.LinkData as string);
+    }
+
+    private void DrawLocationItem(object? sender, DrawItemEventArgs e)
+    {
+        var isDropDownItem = (e.State & DrawItemState.ComboBoxEdit) == 0;
+        var isHighlighted = isDropDownItem && (e.State & DrawItemState.Selected) != 0;
+        using var background = new SolidBrush(isHighlighted ? Theme.Accent : Theme.Input);
+        e.Graphics.FillRectangle(background, e.Bounds);
+
+        if (e.Index >= 0 && e.Index < _location.Items.Count)
+        {
+            var textBounds = new Rectangle(e.Bounds.X + 7, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 10), e.Bounds.Height);
+            TextRenderer.DrawText(
+                e.Graphics,
+                _location.Items[e.Index]?.ToString() ?? "",
+                Theme.Font,
+                textBounds,
+                Theme.Text,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
+
+        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
+    }
+
+    private void DrawLoginItem(object? sender, DrawItemEventArgs e)
+    {
+        var isHighlighted = (e.State & DrawItemState.Selected) != 0;
+        using var background = new SolidBrush(isHighlighted ? Theme.Accent : Theme.Input);
+        e.Graphics.FillRectangle(background, e.Bounds);
+
+        if (e.Index >= 0 && e.Index < _login.Items.Count)
+        {
+            var textBounds = new Rectangle(e.Bounds.X + 7, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 10), e.Bounds.Height);
+            TextRenderer.DrawText(
+                e.Graphics,
+                _login.Items[e.Index]?.ToString() ?? "",
+                _login.Font,
+                textBounds,
+                Theme.Text,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
+
+        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
     private static void OpenPolicyLink(string? url)
@@ -773,7 +1392,7 @@ internal sealed class LoginForm : Form
             parent.Controls.Add(logo);
         }
         parent.Controls.Add(Label("Flair Messenger", 106, 30, 260, 30, 18, true));
-        parent.Controls.Add(Label($"FM - Second Life | v{AppInfo.Version}", 108, 62, 220, 24, 10));
+        parent.Controls.Add(Label($"{AppInfo.Tagline} | v{AppInfo.Version}", 108, 62, 260, 24, 10));
     }
 
     internal static Icon AppIcon()
@@ -808,27 +1427,41 @@ internal sealed class LoginForm : Form
         Font = new Font("Segoe UI", 11)
     };
 
-    internal static Button Button(string text) => new()
+    internal static Button Button(string text)
     {
-        Text = text,
-        FlatStyle = FlatStyle.Flat,
-        BackColor = Theme.Accent,
-        ForeColor = Color.White,
-        Font = Theme.Bold
-    };
+        var button = new ThemedButton
+        {
+            Text = text,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.Accent,
+            ForeColor = Color.White,
+            Font = Theme.Bold,
+            UseVisualStyleBackColor = false
+        };
+        button.FlatAppearance.BorderColor = Color.FromArgb(129, 140, 248);
+        return button;
+    }
 
     internal static Label Label(string text, int x = 0, int y = 0, int w = 350, int h = 24, float size = 10, bool bold = false)
     {
-        var label = new Label { Text = text, ForeColor = Theme.Text, BackColor = Color.Transparent, Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular) };
+        var label = new Label
+        {
+            Text = text,
+            ForeColor = Theme.Text,
+            BackColor = Color.Transparent,
+            Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular),
+            TextAlign = ContentAlignment.MiddleLeft,
+            UseCompatibleTextRendering = false
+        };
         label.SetBounds(x, y, w, h);
         return label;
     }
 
-    private void Add(Label label, TextBox box, int x, int y, int width)
+    private void Add(Label label, Control box, int x, int y, int width)
     {
-        Controls.Add(label);
+        _loginBody.Controls.Add(label);
         box.SetBounds(x, y, width, 30);
-        Controls.Add(box);
+        _loginBody.Controls.Add(box);
     }
 }
 
@@ -869,11 +1502,15 @@ internal sealed class MainForm : Form
     private readonly Panel _titleBar = new();
     private readonly Label _windowTitle = new();
     private readonly Button _maximizeWindowButton = new();
+    private readonly Button _closeChatButton = LoginForm.Button("Close chat");
     private readonly Dictionary<string, Button> _navButtons = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _closedConversationIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _conversationHistoryCutoffs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Icon _baseWindowIcon;
     private readonly NotifyIcon _tray;
     private Icon? _unreadBadgeIcon;
     private static readonly TimeSpan RecentConversationWindow = TimeSpan.FromHours(24);
+    private readonly DateTime _sessionStartedUtc = DateTime.UtcNow;
     private ConversationItem _active = new("system", "System", ConversationKind.System);
     private bool _logoutStarted;
     private bool _logoutFinished;
@@ -881,6 +1518,7 @@ internal sealed class MainForm : Form
     private bool _friendsRefreshRunning;
     private bool _sendingMessage;
     private bool _refreshingConversations;
+    private bool _minimizeToTray;
     private string _activePage = "Chats";
     private int _unreadCount;
 
@@ -889,12 +1527,24 @@ internal sealed class MainForm : Form
         _service = service;
         _loginName = loginName;
         _location = location;
+        _minimizeToTray = Store.ReadSettings().MinimizeToTray;
+        _closedConversationIds.UnionWith(Store.ReadClosedConversationIds(loginName));
+        foreach (var (conversationId, cutoff) in Store.ReadConversationHistoryCutoffs(loginName))
+            _conversationHistoryCutoffs[conversationId] = cutoff;
+        foreach (var conversationId in _closedConversationIds)
+            _conversationHistoryCutoffs.TryAdd(conversationId, _sessionStartedUtc);
         var storedMessages = Store.ReadMessages();
         _messages = storedMessages.Where(message => !IsLegacyTypingArtifact(message)).ToList();
-        if (_messages.Count != storedMessages.Count) Store.WriteMessages(_messages);
+        var historyChanged = _messages.Count != storedMessages.Count;
+        foreach (var message in _messages.Where(IsLegacyApplicationSender))
+        {
+            message.Sender = AppInfo.Name;
+            historyChanged = true;
+        }
+        if (historyChanged) Store.WriteMessages(_messages);
         _notifications = new List<ChatRecord>();
 
-        Text = $"Flair Messenger (FM) v{AppInfo.Version}";
+        Text = $"{AppInfo.ProductTitle} v{AppInfo.Version}";
         Size = new Size(1100, 720);
         MinimumSize = new Size(920, 600);
         StartPosition = FormStartPosition.CenterScreen;
@@ -910,6 +1560,8 @@ internal sealed class MainForm : Form
         _tray.ContextMenuStrip.Items.Add("Mark all as read", null, (_, _) => ClearUnread());
         _tray.ContextMenuStrip.Items.Add("Exit", null, (_, _) => Close());
         _tray.DoubleClick += (_, _) => RestoreFromTray();
+        _closeChatButton.AccessibleName = "Close active chat";
+        _closeChatButton.Click += (_, _) => CloseActiveConversation();
 
         BuildShell();
         WireSecondLifeEvents();
@@ -923,11 +1575,18 @@ internal sealed class MainForm : Form
         !record.ConversationId.Equals("system", StringComparison.OrdinalIgnoreCase) &&
         record.Text.Trim().Equals("typing", StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsLegacyApplicationSender(ChatRecord record) =>
+        record.Sender.Equals("FM", StringComparison.OrdinalIgnoreCase) &&
+        (record.ConversationId.Equals("system", StringComparison.OrdinalIgnoreCase) ||
+         record.Text.StartsWith("Unable to join group chat", StringComparison.OrdinalIgnoreCase) ||
+         record.Text.StartsWith("The message could not be sent", StringComparison.OrdinalIgnoreCase));
+
     private void WireSecondLifeEvents()
     {
         _service.MessageReceived += record => BeginInvoke(() =>
         {
             var currentlyReading = IsReadingConversation(record.ConversationId);
+            ReopenConversation(record.ConversationId);
             AddMessage(record);
             var source = record.ConversationId.StartsWith("group:", StringComparison.OrdinalIgnoreCase)
                 ? $"group {record.ConversationName}"
@@ -1012,7 +1671,7 @@ internal sealed class MainForm : Form
             brand.Controls.Add(logo);
         }
         brand.Controls.Add(ShellLabel("Flair Messenger", 66, 15, 146, 24, 10, true));
-        brand.Controls.Add(ShellLabel("Second Life IM", 66, 40, 146, 20, 9));
+        brand.Controls.Add(ShellLabel(AppInfo.Tagline, 66, 40, 160, 20, 9));
 
         var navigation = new TableLayoutPanel
         {
@@ -1091,10 +1750,12 @@ internal sealed class MainForm : Form
         iconHost.Controls.Add(icon);
         layout.Controls.Add(iconHost, 0, 0);
 
-        _windowTitle.Text = $"Flair Messenger (FM) - v{AppInfo.Version}";
+        _windowTitle.Text = $"{AppInfo.ProductTitle} - v{AppInfo.Version}";
         _windowTitle.Dock = DockStyle.Fill;
-        _windowTitle.Margin = Padding.Empty;
+        _windowTitle.Margin = new Padding(0, 9, 0, 9);
         _windowTitle.Padding = new Padding(2, 0, 0, 0);
+        _windowTitle.AutoSize = false;
+        _windowTitle.AutoEllipsis = true;
         _windowTitle.Font = new Font("Segoe UI", 9);
         _windowTitle.ForeColor = Theme.Muted;
         _windowTitle.BackColor = Theme.Rail;
@@ -1168,7 +1829,9 @@ internal sealed class MainForm : Form
         button.FlatAppearance.MouseDownBackColor = Theme.Panel;
         button.BackColor = Theme.Rail;
         button.ForeColor = Theme.Text;
-        button.Font = new Font("Segoe UI Symbol", 11);
+        button.Font = accessibleName == "Close" ? Theme.CloseGlyph : Theme.WindowGlyph;
+        button.TextAlign = ContentAlignment.MiddleCenter;
+        button.MinimumSize = accessibleName == "Close" ? new Size(44, 32) : Size.Empty;
         button.TabStop = false;
         button.UseVisualStyleBackColor = false;
         button.AccessibleName = accessibleName;
@@ -1245,7 +1908,20 @@ internal sealed class MainForm : Form
         chatLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         split.Panel2.Controls.Add(chatLayout);
 
-        var header = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(18, 12, 18, 8) };
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = new Padding(18, 8, 18, 8),
+            BackColor = Theme.Panel
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var headerText = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Panel };
         _title.Text = _active.Name;
         _title.Dock = DockStyle.Top;
         _title.Height = 28;
@@ -1258,8 +1934,14 @@ internal sealed class MainForm : Form
         _subtitle.Font = new Font("Segoe UI", 9);
         _subtitle.ForeColor = Theme.Muted;
         _subtitle.BackColor = Color.Transparent;
-        header.Controls.Add(_subtitle);
-        header.Controls.Add(_title);
+        headerText.Controls.Add(_subtitle);
+        headerText.Controls.Add(_title);
+        header.Controls.Add(headerText, 0, 0);
+
+        _closeChatButton.Dock = DockStyle.Fill;
+        _closeChatButton.Margin = new Padding(8, 4, 0, 4);
+        _closeChatButton.Visible = _active.Kind != ConversationKind.System;
+        header.Controls.Add(_closeChatButton, 1, 0);
         chatLayout.Controls.Add(header, 0, 0);
 
         var feedPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Bg, Padding = new Padding(18, 12, 18, 8), Margin = Padding.Empty };
@@ -1401,14 +2083,86 @@ internal sealed class MainForm : Form
     private void ShowSettings()
     {
         SetActiveNavigation("Settings");
-        ShowTextPage("Settings", new[]
+        _content.Controls.Clear();
+
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Bg, Padding = new Padding(26) };
+        _content.Controls.Add(panel);
+        var layout = new TableLayoutPanel
         {
-            $"Login name: {_loginName}",
-            $"Login location: {(_location == "home" ? "Home" : "Last location")}",
-            "Use Remember details on the login screen.",
-            "Minimizing moves FM to the system tray.",
-            "Chats are stored locally in the data folder next to the BAT file."
-        });
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Theme.Bg
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.Controls.Add(layout);
+
+        var heading = ShellLabel("Settings", 0, 0, 500, 36, 18, true);
+        heading.Dock = DockStyle.Fill;
+        layout.Controls.Add(heading, 0, 0);
+
+        var preferencePanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(18, 14, 18, 12),
+            BackColor = Theme.Panel
+        };
+        layout.Controls.Add(preferencePanel, 0, 1);
+
+        var minimizeToTray = new CheckBox
+        {
+            Text = "Minimize to system tray",
+            Checked = _minimizeToTray,
+            AutoSize = false,
+            Height = 30,
+            Dock = DockStyle.Top,
+            Font = Theme.Bold,
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var explanation = ShellLabel(
+            "When enabled, minimizing hides Flair Messenger in the notification area. " +
+            "When disabled, the client remains on the Windows taskbar.",
+            0, 0, 700, 46, 9);
+        explanation.Dock = DockStyle.Top;
+        explanation.ForeColor = Theme.Muted;
+        explanation.Padding = new Padding(22, 0, 0, 0);
+        var savedStatus = ShellLabel("", 0, 0, 700, 24, 9);
+        savedStatus.Dock = DockStyle.Top;
+        savedStatus.ForeColor = Theme.Muted;
+        savedStatus.Padding = new Padding(22, 0, 0, 0);
+        minimizeToTray.CheckedChanged += (_, _) =>
+        {
+            _minimizeToTray = minimizeToTray.Checked;
+            if (!_minimizeToTray) _tray.Visible = false;
+            try
+            {
+                Store.SaveClientPreferences(_minimizeToTray);
+                savedStatus.Text = "Saved.";
+            }
+            catch
+            {
+                savedStatus.Text = "The setting could not be saved, but it remains active for this session.";
+            }
+        };
+        preferencePanel.Controls.Add(savedStatus);
+        preferencePanel.Controls.Add(explanation);
+        preferencePanel.Controls.Add(minimizeToTray);
+
+        var details = new ListBox { Dock = DockStyle.Fill, Margin = new Padding(0, 16, 0, 0) };
+        StyleList(details);
+        details.Items.Add($"Login name: {_loginName}");
+        details.Items.Add($"Login location: {LoginLocationParser.Display(_location)}");
+        details.Items.Add("Use Remember details on the login screen to save account profiles.");
+        details.Items.Add("Chats are stored locally in the data folder next to the BAT file.");
+        layout.Controls.Add(details, 0, 2);
     }
 
     private void ShowAbout()
@@ -1416,7 +2170,7 @@ internal sealed class MainForm : Form
         SetActiveNavigation("About");
         ShowTextPage("About", new[]
         {
-            "Flair Messenger (FM)",
+            AppInfo.ProductTitle,
             "Second Life login and IM through LibreMetaverse.",
             "Private IM, Friends, Groups, Notifications, Settings and tray mode.",
             $"Version {AppInfo.Version}"
@@ -1507,9 +2261,38 @@ internal sealed class MainForm : Form
 
     private void OpenConversation(ConversationItem item)
     {
+        ReopenConversation(item.Id);
         _active = item with { ShowSource = true, DisplayText = null };
         ShowChats();
         SelectConversation(_active.Id);
+    }
+
+    private void CloseActiveConversation()
+    {
+        if (_active.Kind == ConversationKind.System) return;
+        _closedConversationIds.Add(_active.Id);
+        _conversationHistoryCutoffs[_active.Id] = DateTime.UtcNow;
+        PersistClosedConversations();
+        _active = new ConversationItem("system", "System", ConversationKind.System);
+        RefreshConversations();
+    }
+
+    private void ReopenConversation(string conversationId)
+    {
+        if (!_closedConversationIds.Remove(conversationId)) return;
+        PersistClosedConversations();
+    }
+
+    private void PersistClosedConversations()
+    {
+        try
+        {
+            Store.WriteConversationState(_loginName, _closedConversationIds, _conversationHistoryCutoffs);
+        }
+        catch
+        {
+            // Closing still works for this session when encrypted settings cannot be updated.
+        }
     }
 
     private async void SendActive(TextBox input, Button send)
@@ -1558,7 +2341,7 @@ internal sealed class MainForm : Form
         {
             if (conversation.Kind == ConversationKind.Group)
             {
-                AddMessage(new ChatRecord { ConversationId = conversation.Id, ConversationName = conversation.Name, Sender = "FM", Text = failureMessage, Time = DateTime.Now });
+                AddMessage(new ChatRecord { ConversationId = conversation.Id, ConversationName = conversation.Name, Sender = AppInfo.Name, Text = failureMessage, Time = DateTime.Now });
                 if (_active.Id == conversation.Id) RenderMessages();
             }
             else
@@ -1598,7 +2381,8 @@ internal sealed class MainForm : Form
 
             var nowUtc = DateTime.UtcNow;
             var recentConversations = _messages
-                .Where(message => IsRecentConversationMessage(message, nowUtc))
+                .Where(message => IsRecentConversationMessage(message, nowUtc) &&
+                    !_closedConversationIds.Contains(message.ConversationId))
                 .GroupBy(message => message.ConversationId, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.OrderByDescending(message => AsUtc(message.Time)).First())
                 .OrderByDescending(message => AsUtc(message.Time));
@@ -1666,27 +2450,37 @@ internal sealed class MainForm : Form
     {
         _title.Text = item.Name;
         _subtitle.Text = ConversationSubtitle(item);
+        _closeChatButton.Visible = item.Kind != ConversationKind.System;
     }
 
     private string ConversationSubtitle(ConversationItem item) => item.Kind switch
     {
         ConversationKind.Group => "Group chat - messages from group members",
         ConversationKind.Private => "Private instant message",
-        _ => $"{_loginName} - {(_location == "home" ? "Home" : "Last location")}" 
+        _ => $"{_loginName} - {LoginLocationParser.Display(_location)}" 
     };
 
     private void RenderMessages()
     {
         _messageFeed.Clear();
         foreach (var msg in _messages.Where(m => m.ConversationId == _active.Id).OrderBy(m => m.Time))
+        {
+            var historyCutoff = _conversationHistoryCutoffs.TryGetValue(msg.ConversationId, out var closedAt)
+                ? AsUtc(closedAt)
+                : _sessionStartedUtc;
+            _messageFeed.SelectionColor = AsUtc(msg.Time) <= historyCutoff
+                ? Theme.HistoryText
+                : Theme.Text;
             _messageFeed.AppendText($"[{msg.Time:HH:mm}] {msg.Sender}: {msg.Text}{Environment.NewLine}{Environment.NewLine}");
+        }
+        _messageFeed.SelectionColor = Theme.Text;
         _messageFeed.SelectionStart = _messageFeed.TextLength;
         _messageFeed.ScrollToCaret();
     }
 
-    private void AddSystem(string text) => AddMessage(new ChatRecord { ConversationId = "system", ConversationName = "System", Sender = "FM", Text = text, Time = DateTime.Now });
+    private void AddSystem(string text) => AddMessage(new ChatRecord { ConversationId = "system", ConversationName = "System", Sender = AppInfo.Name, Text = text, Time = DateTime.Now });
 
-    private void AddNotification(string text) => _notifications.Add(new ChatRecord { ConversationId = "notifications", ConversationName = "Notifications", Sender = "FM", Text = text, Time = DateTime.Now });
+    private void AddNotification(string text) => _notifications.Add(new ChatRecord { ConversationId = "notifications", ConversationName = "Notifications", Sender = AppInfo.Name, Text = text, Time = DateTime.Now });
 
     private void AddMessage(ChatRecord record)
     {
@@ -1849,11 +2643,15 @@ internal sealed class MainForm : Form
     {
         base.OnResize(e);
         UpdateMaximizeButton();
-        if (WindowState == FormWindowState.Minimized)
+        if (WindowState == FormWindowState.Minimized && _minimizeToTray)
         {
             Hide();
             _tray.Visible = true;
-            _tray.ShowBalloonTip(1200, "Flair Messenger", "FM is still running in the system tray.", ToolTipIcon.Info);
+            _tray.ShowBalloonTip(1200, AppInfo.Name, "Flair Messenger is still running in the system tray.", ToolTipIcon.Info);
+        }
+        else if (WindowState == FormWindowState.Minimized)
+        {
+            _tray.Visible = false;
         }
     }
 

@@ -19,7 +19,9 @@ Flair Messenger is designed as a local, privacy-focused Second Life messaging cl
 
 Flair Messenger processes the Second Life login name and password entered on the login screen. These values are passed to LibreMetaverse so it can authenticate with the official Second Life main-grid login endpoint.
 
-The password is never intentionally written to logs. When **Remember details** is disabled, the application saves no reusable password. When it is enabled, the complete settings record is encrypted with Windows Data Protection API (DPAPI) using `DataProtectionScope.CurrentUser`.
+The password is never intentionally written to logs. Flair Messenger can remember multiple account profiles. Each profile contains its own login name, password, login location and terms-acceptance preference. A custom login destination is stored as a normalized region and coordinate string, not as a fetched webpage. Flair Messenger does not open or contact a pasted SLURL website while parsing it. When **Remember details** is disabled for a new account, the application saves no reusable password or reusable terms preference for that account. When it is disabled for a previously remembered account, that profile is removed only after a successful login; a failed login does not delete saved credentials. Previously remembered profiles for other accounts remain unchanged. The complete settings record is encrypted with Windows Data Protection API (DPAPI) using `DataProtectionScope.CurrentUser`.
+
+When **Remember details** is enabled, Flair Messenger stores a per-account boolean indicating that the terms checkbox was selected. This preference is local; it is not transmitted as a separate acceptance record and does not replace any acceptance process required by Linden Lab.
 
 ### Messages and conversation metadata
 
@@ -43,7 +45,7 @@ The launcher redirects application output to `data/launcher.log`. This file is l
 
 | File | Contents | Storage protection |
 | --- | --- | --- |
-| `data/settings.dat` | Remember preference, login name, password and login location | Entire file encrypted with DPAPI for the current Windows user |
+| `data/settings.dat` | Client preferences, remembered account profiles, passwords, login locations, selected account, per-account terms-acceptance booleans, closed-conversation identifiers and history cut-off times | Entire file encrypted with DPAPI for the current Windows user |
 | `data/messages.dat` | Conversation IDs, names, senders, messages and timestamps | Entire file encrypted with DPAPI for the current Windows user |
 | `data/launcher.log` | Local startup and diagnostic output | Plain text |
 

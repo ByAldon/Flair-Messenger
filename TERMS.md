@@ -34,6 +34,10 @@ The Flair Messenger login screen provides links to the official Second Life term
 
 Selecting the checkbox confirms only that the user accepts the current official Linden Lab terms and policies for the intended session. It does not create an affiliation with Linden Lab and does not replace any acceptance process required directly by Linden Lab.
 
+When **Remember details** is enabled, Flair Messenger stores the checkbox preference separately for each remembered account in the local DPAPI-encrypted `data/settings.dat` file and restores it when that account is selected. When **Remember details** is disabled, the checkbox must be selected again after restarting the application. Deleting `data/settings.dat` removes every remembered account and acceptance preference.
+
+The remembered checkbox is only a local application preference. Users remain responsible for reviewing the current official policies, particularly when Linden Lab changes them.
+
 ## 4. User responsibility
 
 The user is solely responsible for:
@@ -69,7 +73,7 @@ Second Life is an external service outside the control of the Flair Messenger co
 
 Flair Messenger sends the entered Second Life credentials to the official Second Life login service through LibreMetaverse. It does not intentionally send credentials to a developer-operated server.
 
-When **Remember details** is enabled, settings are encrypted locally with Windows DPAPI for the current Windows user. Local chat history is protected in the same way. Diagnostic information in `data/launcher.log` is plain text.
+When **Remember details** is enabled, all remembered account profiles and settings are encrypted locally with Windows DPAPI for the current Windows user. Local chat history is protected in the same way. Diagnostic information in `data/launcher.log` is plain text.
 
 Users must read [PRIVACY.md](PRIVACY.md) before installation or use. Never distribute the `data` folder or attach its contents to a public issue.
 
