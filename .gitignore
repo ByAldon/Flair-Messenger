@@ -1,0 +1,19 @@
+# Local private data
+data/
+
+# .NET build output
+**/bin/
+**/obj/
+
+# Local IDE and user settings
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Release archives
+*.zip

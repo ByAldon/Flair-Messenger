@@ -8,7 +8,14 @@ If Not fso.FolderExists(dataDir) Then
 End If
 
 projectPath = fso.BuildPath(appDir, "src\FlairMessenger\FlairMessenger.csproj")
+appPath = fso.BuildPath(appDir, "app\FlairMessenger.dll")
 logPath = fso.BuildPath(dataDir, "launcher.log")
 
-command = "cmd /c set ""FLAIR_MESSENGER_HOME=" & appDir & """ && cd /d """ & appDir & """ && dotnet run --project """ & projectPath & """ >> """ & logPath & """ 2>&1"
+If fso.FileExists(appPath) Then
+    runTarget = "dotnet """ & appPath & """"
+Else
+    runTarget = "dotnet run --project """ & projectPath & """"
+End If
+
+command = "cmd /c set ""FLAIR_MESSENGER_HOME=" & appDir & """ && cd /d """ & appDir & """ && " & runTarget & " >> """ & logPath & """ 2>&1"
 shell.Run command, 0, False
