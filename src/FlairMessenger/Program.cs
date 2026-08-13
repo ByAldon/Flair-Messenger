@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.35";
+    public const string Version = "0.4.37";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -756,6 +756,15 @@ internal sealed class SecondLifeService : IDisposable
         return "";
     }
 
+    private static string ReadDisplayMember(object source, string name)
+    {
+        var value = ReadObjectMember(source, name);
+        if (value is null) return "";
+        if (value is string text) return text;
+        if (value is LMUUID uuid) return uuid == LMUUID.Zero ? "" : uuid.ToString();
+        return value.ToString() ?? "";
+    }
+
     private static object? ReadObjectMember(object source, string name)
     {
         var type = source.GetType();
@@ -1109,11 +1118,11 @@ internal sealed class SecondLifeService : IDisposable
         var profile = new AvatarProfile(
             avatarId.ToString(),
             string.IsNullOrWhiteSpace(displayName) ? avatarId.ToString() : displayName,
-            ReadStringMember(properties, "BornOn"),
-            ReadStringMember(properties, "AboutText"),
-            ReadStringMember(properties, "FirstLifeText"),
-            ReadStringMember(properties, "ProfileURL"),
-            ReadStringMember(properties, "Partner"));
+            ReadDisplayMember(properties, "BornOn"),
+            ReadDisplayMember(properties, "AboutText"),
+            ReadDisplayMember(properties, "FirstLifeText"),
+            ReadDisplayMember(properties, "ProfileURL"),
+            ReadDisplayMember(properties, "Partner"));
         waiter.TrySetResult(profile);
     }
     public bool SendLocalChat(string text)
@@ -2044,7 +2053,7 @@ internal sealed class MainForm : Form
         _tray.ContextMenuStrip.Items.Add("Exit", null, (_, _) => Close());
         _tray.DoubleClick += (_, _) => RestoreFromTray();
         _profileChatButton.AccessibleName = "View avatar profile";
-        _profileChatButton.Click += async (_, _) => await ViewActiveAvatarProfileAsync();
+        _profileChatButton.Click += (_, _) => OpenActiveWebProfile();
         _closeChatButton.AccessibleName = "Close active chat";
         _closeChatButton.Click += (_, _) => CloseActiveConversation();
 
@@ -2908,7 +2917,7 @@ internal sealed class MainForm : Form
     private void AttachAvatarContextMenu(ListBox list)
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("View Profile", null, (_, _) => _ = ViewSelectedAvatarProfileAsync(list));
+        menu.Items.Add("View Profile", null, (_, _) => OpenSelectedWebProfile(list));
         menu.Items.Add("Open IM", null, (_, _) =>
         {
             if (list.SelectedItem is ConversationItem item)
@@ -2923,35 +2932,16 @@ internal sealed class MainForm : Form
         };
     }
 
-    private async Task ViewActiveAvatarProfileAsync()
+    private void OpenActiveWebProfile()
     {
         if (_active.Kind != ConversationKind.Private) return;
-
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-            var profile = await _service.GetAvatarProfileAsync(_active.Id, _active.Name, timeout.Token);
-            ShowAvatarProfile(profile);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Profile unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
+        OpenWebProfile(_active.Id);
     }
-    private async Task ViewSelectedAvatarProfileAsync(ListBox list)
+
+    private void OpenSelectedWebProfile(ListBox list)
     {
         if (list.SelectedItem is not ConversationItem item || item.Kind != ConversationKind.Private) return;
-
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-            var profile = await _service.GetAvatarProfileAsync(item.Id, item.Name, timeout.Token);
-            ShowAvatarProfile(profile);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Profile unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
+        OpenWebProfile(item.Id);
     }
 
     private void ShowAvatarProfile(AvatarProfile profile)
@@ -2959,8 +2949,8 @@ internal sealed class MainForm : Form
         var dialog = new Form
         {
             Text = $"Profile - {profile.Name}",
-            Size = new Size(560, 520),
-            MinimumSize = new Size(420, 360),
+            Size = new Size(620, 600),
+            MinimumSize = new Size(500, 420),
             StartPosition = FormStartPosition.CenterParent,
             BackColor = Theme.Bg,
             ForeColor = Theme.Text,
@@ -2971,57 +2961,151 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Padding = new Padding(18),
             BackColor = Theme.Bg
         };
         body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         dialog.Controls.Add(body);
 
+        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 82, ColumnCount = 2, RowCount = 1, BackColor = Theme.Bg, Margin = new Padding(0, 0, 0, 10) };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
         var title = new Label
         {
             Text = profile.Name,
-            AutoSize = true,
-            Font = new Font("Segoe UI", 16, FontStyle.Bold),
+            Dock = DockStyle.Top,
+            Height = 36,
+            Font = new Font("Segoe UI", 18, FontStyle.Bold),
             ForeColor = Theme.Text,
             BackColor = Theme.Bg,
+            AutoEllipsis = true
+        };
+        var subtitle = new Label
+        {
+            Text = "Second Life Avatar Profile",
+            Dock = DockStyle.Top,
+            Height = 24,
+            Font = new Font("Segoe UI", 9),
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Bg
+        };
+        header.Controls.Add(subtitle);
+        header.Controls.Add(title);
+        body.Controls.Add(header, 0, 0);
+
+        var meta = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            RowCount = 4,
+            AutoSize = true,
+            BackColor = Theme.Panel,
+            Padding = new Padding(12),
             Margin = new Padding(0, 0, 0, 12)
         };
-        body.Controls.Add(title, 0, 0);
+        meta.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        meta.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        AddProfileMetaRow(meta, 0, "Born", profile.BornOn);
+        AddProfileMetaRow(meta, 1, "Partner", profile.Partner);
+        AddProfileMetaRow(meta, 2, "Profile URL", profile.ProfileUrl);
+        AddProfileMetaRow(meta, 3, "Avatar ID", profile.Id);
+        body.Controls.Add(meta, 0, 1);
 
-        var details = new TextBox
+        var sections = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = Theme.Bg,
+            Margin = Padding.Empty
+        };
+        sections.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        sections.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        sections.Controls.Add(ProfileSection("About", profile.AboutText), 0, 0);
+        sections.Controls.Add(ProfileSection("First Life", profile.FirstLifeText), 0, 1);
+        body.Controls.Add(sections, 0, 2);
+
+        dialog.Show(this);
+    }
+
+    private static void OpenWebProfile(string avatarId)
+    {
+        if (string.IsNullOrWhiteSpace(avatarId)) return;
+        var url = $"https://world.secondlife.com/resident/{avatarId}";
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch
+        {
+            Clipboard.SetText(url);
+            MessageBox.Show("The web profile URL was copied to the clipboard.", "Web Profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+    private static void AddProfileMetaRow(TableLayoutPanel table, int row, string label, string value)
+    {
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label
+        {
+            Text = label,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Panel,
+            Margin = new Padding(0, 0, 8, 8)
+        }, 0, row);
+        table.Controls.Add(new Label
+        {
+            Text = DisplayProfileValue(value),
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9),
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            Margin = new Padding(0, 0, 0, 8)
+        }, 1, row);
+    }
+
+    private static Control ProfileSection(string title, string text)
+    {
+        var section = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = Theme.Panel,
+            Padding = new Padding(12),
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        section.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        section.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        section.Controls.Add(new Label
+        {
+            Text = title,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            Margin = new Padding(0, 0, 0, 8)
+        }, 0, 0);
+        section.Controls.Add(new TextBox
         {
             Dock = DockStyle.Fill,
             Multiline = true,
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.None,
             BackColor = Theme.Panel,
             ForeColor = Theme.Text,
-            BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Segoe UI", 10),
-            Text = BuildAvatarProfileText(profile)
-        };
-        body.Controls.Add(details, 0, 1);
-        dialog.Show(this);
-    }
-
-    private static string BuildAvatarProfileText(AvatarProfile profile)
-    {
-        var lines = new List<string>
-        {
-            $"Second Life ID: {profile.Id}",
-            $"Born: {DisplayProfileValue(profile.BornOn)}",
-            $"Partner: {DisplayProfileValue(profile.Partner)}",
-            $"Profile URL: {DisplayProfileValue(profile.ProfileUrl)}",
-            "",
-            "About",
-            DisplayProfileValue(profile.AboutText),
-            "",
-            "First Life",
-            DisplayProfileValue(profile.FirstLifeText)
-        };
-        return string.Join(Environment.NewLine, lines);
+            Text = DisplayProfileValue(text)
+        }, 0, 1);
+        return section;
     }
 
     private static string DisplayProfileValue(string value) => string.IsNullOrWhiteSpace(value) ? "Not provided" : value.Trim();
@@ -3555,6 +3639,9 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
 
 
 
