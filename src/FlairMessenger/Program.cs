@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.31";
+    public const string Version = "0.4.32";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -587,6 +587,20 @@ internal sealed class SecondLifeService : IDisposable
     public IReadOnlyList<FriendInfo> Friends => _client.Friends.FriendList.Values.ToArray();
     public IReadOnlyDictionary<LMUUID, Group> Groups => _groups;
     public bool IsLoggedIn => _client.Network.Connected;
+    public string CurrentSimName
+    {
+        get
+        {
+            try
+            {
+                return _client.Network.CurrentSim?.Name ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+    }
     public string FriendsLoadStatus { get; private set; } = "Waiting for friend data.";
 
     public SecondLifeService()
@@ -1765,6 +1779,7 @@ internal sealed class MainForm : Form
     private readonly SecondLifeService _service;
     private readonly string _loginName;
     private readonly string _location;
+    private string _currentSimName = "";
     private readonly List<ChatRecord> _messages;
     private readonly List<ChatRecord> _notifications;
     private ListBox _conversations = new();
@@ -1825,7 +1840,7 @@ internal sealed class MainForm : Form
         if (historyChanged) Store.WriteMessages(_messages);
         _notifications = new List<ChatRecord>();
 
-        Text = $"{AppInfo.ProductTitle} v{AppInfo.Version}";
+        UpdateWindowTitle();
         Size = new Size(1100, 720);
         MinimumSize = new Size(920, 600);
         StartPosition = FormStartPosition.CenterScreen;
@@ -1847,6 +1862,8 @@ internal sealed class MainForm : Form
         BuildShell();
         WireSecondLifeEvents();
         AddSystem("Signed in to Second Life.");
+        UpdateCurrentSimName(addSystemMessage: true);
+        _ = RefreshCurrentSimNameAfterLoginAsync();
         ShowChats();
         RefreshAll();
     }
@@ -1914,8 +1931,53 @@ internal sealed class MainForm : Form
         {
             AddSystem(text);
             AddNotification(text);
+            UpdateCurrentSimName(addSystemMessage: false);
             RefreshAll();
         });
+    }
+
+    private string BuildWindowTitle()
+    {
+        var baseTitle = $"{AppInfo.ProductTitle} - v{AppInfo.Version}";
+        return string.IsNullOrWhiteSpace(_currentSimName) ? baseTitle : $"{baseTitle} - {_currentSimName}";
+    }
+
+    private void UpdateWindowTitle()
+    {
+        var title = BuildWindowTitle();
+        Text = title;
+        _windowTitle.Text = title;
+    }
+
+    private void UpdateCurrentSimName(bool addSystemMessage)
+    {
+        var simName = _service.CurrentSimName.Trim();
+        if (string.IsNullOrWhiteSpace(simName) || simName.Equals(_currentSimName, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _currentSimName = simName;
+        UpdateWindowTitle();
+        if (addSystemMessage)
+            AddSystem($"Current sim: {_currentSimName}");
+    }
+
+    private async Task RefreshCurrentSimNameAfterLoginAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        if (IsDisposed) return;
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() =>
+            {
+                UpdateCurrentSimName(addSystemMessage: true);
+                RefreshAll();
+            });
+            return;
+        }
+
+        UpdateCurrentSimName(addSystemMessage: true);
+        RefreshAll();
     }
 
     private void BuildShell()
@@ -2137,7 +2199,7 @@ internal sealed class MainForm : Form
         iconHost.Controls.Add(icon);
         layout.Controls.Add(iconHost, 0, 0);
 
-        _windowTitle.Text = $"{AppInfo.ProductTitle} - v{AppInfo.Version}";
+        _windowTitle.Text = BuildWindowTitle();
         _windowTitle.Dock = DockStyle.Fill;
         _windowTitle.Margin = new Padding(0, 9, 0, 9);
         _windowTitle.Padding = new Padding(2, 0, 0, 0);
@@ -3137,6 +3199,9 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
 
 
 
