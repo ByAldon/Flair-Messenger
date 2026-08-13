@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.33";
+    public const string Version = "0.4.34";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -219,6 +219,19 @@ internal static class LoginLocationParser
             rawLocation);
         return true;
     }
+}
+
+internal sealed record AvatarProfile(
+    string Id,
+    string Name,
+    string BornOn,
+    string AboutText,
+    string FirstLifeText,
+    string ProfileUrl,
+    string Partner);
+internal sealed record NearbyPerson(string Id, string Name, int X, int Y, int Z, double Distance)
+{
+    public string DisplayText => $"{Name} - {Distance:0}m - ({X}, {Y}, {Z})";
 }
 
 internal sealed class ChatRecord
@@ -560,6 +573,11 @@ internal sealed class SecondLifeService : IDisposable
 {
     private readonly GridClient _client = new();
     private readonly Dictionary<LMUUID, Group> _groups = new();
+    private readonly object _nearbyLock = new();
+    private readonly Dictionary<LMUUID, NearbyPerson> _nearbyPeople = new();
+    private readonly object _avatarProfileLock = new();
+    private readonly Dictionary<LMUUID, TaskCompletionSource<AvatarProfile>> _avatarProfileWaiters = new();
+    private readonly Dictionary<LMUUID, string> _avatarProfileNames = new();
     private readonly SemaphoreSlim _friendsRefreshLock = new(1, 1);
     private readonly object _groupChatLock = new();
     private readonly HashSet<LMUUID> _joinedGroupChats = [];
@@ -583,9 +601,17 @@ internal sealed class SecondLifeService : IDisposable
     public event Action<ChatRecord>? MessageReceived;
     public event Action? FriendsChanged;
     public event Action? GroupsChanged;
+    public event Action? NearbyChanged;
 
     public IReadOnlyList<FriendInfo> Friends => _client.Friends.FriendList.Values.ToArray();
     public IReadOnlyDictionary<LMUUID, Group> Groups => _groups;
+    public IReadOnlyList<NearbyPerson> NearbyPeople
+    {
+        get
+        {
+            lock (_nearbyLock) return _nearbyPeople.Values.ToArray();
+        }
+    }
     public bool IsLoggedIn => _client.Network.Connected;
     public string CurrentSimName
     {
@@ -620,6 +646,7 @@ internal sealed class SecondLifeService : IDisposable
         }
     }
     public string FriendsLoadStatus { get; private set; } = "Waiting for friend data.";
+    public string NearbyPeopleStatus { get; private set; } = "Waiting for nearby avatars.";
 
     public SecondLifeService()
     {
@@ -689,6 +716,8 @@ internal sealed class SecondLifeService : IDisposable
         _client.Friends.FriendOffline += (_, _) => UpdateFriendsStatus();
         _client.Friends.FriendNames += (_, _) => UpdateFriendsStatus();
         _client.Self.GroupChatJoined += (_, e) => HandleGroupChatJoined(e);
+        _client.Objects.AvatarUpdate += (_, e) => UpdateNearbyAvatar(e.Avatar);
+        _client.Avatars.AvatarPropertiesReply += (_, e) => HandleAvatarPropertiesReply(e);
         _client.Groups.CurrentGroups += (_, e) =>
         {
             _groups.Clear();
@@ -704,6 +733,15 @@ internal sealed class SecondLifeService : IDisposable
         };
         _client.Network.Disconnected += (_, e) =>
         {
+            lock (_nearbyLock) _nearbyPeople.Clear();
+            lock (_avatarProfileLock)
+            {
+                foreach (var waiter in _avatarProfileWaiters.Values) waiter.TrySetCanceled();
+                _avatarProfileWaiters.Clear();
+                _avatarProfileNames.Clear();
+            }
+            NearbyPeopleStatus = "Disconnected.";
+            NearbyChanged?.Invoke();
             CancelGroupChatWaiters();
             if (!_logoutRequested)
                 Status?.Invoke($"Connection lost: {e.Reason}");
@@ -716,6 +754,20 @@ internal sealed class SecondLifeService : IDisposable
         if (type.GetProperty(name)?.GetValue(source) is string propertyValue) return propertyValue;
         if (type.GetField(name)?.GetValue(source) is string fieldValue) return fieldValue;
         return "";
+    }
+
+    private static object? ReadObjectMember(object source, string name)
+    {
+        var type = source.GetType();
+        return type.GetProperty(name)?.GetValue(source) ?? type.GetField(name)?.GetValue(source);
+    }
+
+    private static LMUUID ReadUuidMember(object source, string name)
+    {
+        var value = ReadObjectMember(source, name);
+        if (value is LMUUID uuid) return uuid;
+        if (value is string text && LMUUID.TryParse(text, out var parsed)) return parsed;
+        return LMUUID.Zero;
     }
 
     internal static bool IsTypingDialog(InstantMessageDialog dialog) =>
@@ -950,6 +1002,120 @@ internal sealed class SecondLifeService : IDisposable
         FriendsChanged?.Invoke();
     }
 
+    public void RefreshNearbyPeople()
+    {
+        lock (_nearbyLock) _nearbyPeople.Clear();
+
+        var simulator = _client.Network.CurrentSim;
+        if (!_client.Network.Connected || simulator is null)
+        {
+            NearbyPeopleStatus = "Nearby people cannot be loaded while disconnected.";
+            NearbyChanged?.Invoke();
+            return;
+        }
+
+        foreach (var avatar in simulator.ObjectsAvatars.Values)
+            UpdateNearbyAvatar(avatar, notify: false);
+
+        UpdateNearbyStatus();
+        NearbyChanged?.Invoke();
+    }
+
+    private void UpdateNearbyAvatar(Avatar avatar, bool notify = true)
+    {
+        if (avatar.ID == LMUUID.Zero || avatar.ID == _client.Self.AgentID) return;
+
+        var name = string.IsNullOrWhiteSpace(avatar.Name) ? avatar.ID.ToString() : avatar.Name;
+        var position = avatar.Position;
+        var selfPosition = _client.Self.SimPosition;
+        var deltaX = position.X - selfPosition.X;
+        var deltaY = position.Y - selfPosition.Y;
+        var deltaZ = position.Z - selfPosition.Z;
+        var distance = Math.Sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+        var person = new NearbyPerson(
+            avatar.ID.ToString(),
+            name,
+            (int)Math.Round(position.X),
+            (int)Math.Round(position.Y),
+            (int)Math.Round(position.Z),
+            distance);
+
+        lock (_nearbyLock) _nearbyPeople[avatar.ID] = person;
+        UpdateNearbyStatus();
+        if (notify) NearbyChanged?.Invoke();
+    }
+
+    private void UpdateNearbyStatus()
+    {
+        int count;
+        lock (_nearbyLock) count = _nearbyPeople.Count;
+        NearbyPeopleStatus = count == 0
+            ? "No nearby people detected yet. Select Refresh to scan the current sim."
+            : $"{count} nearby {(count == 1 ? "person" : "people")} detected.";
+    }
+
+    public async Task<AvatarProfile> GetAvatarProfileAsync(string avatarId, string displayName, CancellationToken token)
+    {
+        if (!LMUUID.TryParse(avatarId, out var id) || id == LMUUID.Zero)
+            throw new InvalidOperationException("This avatar has no valid Second Life ID.");
+        if (!_client.Network.Connected)
+            throw new InvalidOperationException("Avatar profiles cannot be loaded while disconnected.");
+
+        var waiter = new TaskCompletionSource<AvatarProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_avatarProfileLock)
+        {
+            _avatarProfileWaiters[id] = waiter;
+            _avatarProfileNames[id] = displayName;
+        }
+
+        try
+        {
+            _client.Avatars.RequestAvatarProperties(id);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, timeout.Token);
+            return await waiter.Task.WaitAsync(linked.Token);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new TimeoutException("Second Life did not return this avatar profile in time.");
+        }
+        finally
+        {
+            lock (_avatarProfileLock)
+            {
+                _avatarProfileWaiters.Remove(id);
+                _avatarProfileNames.Remove(id);
+            }
+        }
+    }
+
+    private void HandleAvatarPropertiesReply(object reply)
+    {
+        var avatarId = ReadUuidMember(reply, "AvatarID");
+        if (avatarId == LMUUID.Zero) return;
+
+        TaskCompletionSource<AvatarProfile>? waiter;
+        string displayName;
+        lock (_avatarProfileLock)
+        {
+            if (!_avatarProfileWaiters.TryGetValue(avatarId, out waiter)) return;
+            _avatarProfileNames.TryGetValue(avatarId, out displayName!);
+        }
+
+        var properties = ReadObjectMember(reply, "Properties")
+            ?? ReadObjectMember(reply, "ProfileProperties")
+            ?? ReadObjectMember(reply, "AvatarProperties")
+            ?? reply;
+        var profile = new AvatarProfile(
+            avatarId.ToString(),
+            string.IsNullOrWhiteSpace(displayName) ? avatarId.ToString() : displayName,
+            ReadStringMember(properties, "BornOn"),
+            ReadStringMember(properties, "AboutText"),
+            ReadStringMember(properties, "FirstLifeText"),
+            ReadStringMember(properties, "ProfileURL"),
+            ReadStringMember(properties, "Partner"));
+        waiter.TrySetResult(profile);
+    }
     public bool SendLocalChat(string text)
     {
         if (string.IsNullOrWhiteSpace(text) || !_client.Network.Connected) return false;
@@ -1803,6 +1969,7 @@ internal sealed class MainForm : Form
     private readonly List<ChatRecord> _notifications;
     private ListBox _conversations = new();
     private ListBox _friendsList = new();
+    private ListBox _nearbyList = new();
     private ListBox _groupsList = new();
     private readonly RichTextBox _messageFeed = new();
     private readonly Label _title = new();
@@ -1946,6 +2113,10 @@ internal sealed class MainForm : Form
         });
         _service.FriendsChanged += () => BeginInvoke(RefreshAll);
         _service.GroupsChanged += () => BeginInvoke(RefreshAll);
+        _service.NearbyChanged += () => BeginInvoke(() =>
+        {
+            if (_activePage.Equals("Nearby People", StringComparison.OrdinalIgnoreCase)) ShowNearbyPeople(refreshFromService: false);
+        });
         _service.Status += text => BeginInvoke(() =>
         {
             AddSystem(text);
@@ -2091,6 +2262,7 @@ internal sealed class MainForm : Form
         foreach (var (text, action) in new (string, Action)[]
         {
             ("Chats", ShowChats),
+            ("Nearby People", () => ShowNearbyPeople()),
             ("Friends", ShowFriends),
             ("Groups", ShowGroups),
             ("Notifications", ShowNotifications),
@@ -2473,6 +2645,23 @@ internal sealed class MainForm : Form
             split.SplitterDistance = target;
     }
 
+    private void ShowNearbyPeople(bool refreshFromService = true)
+    {
+        _nearbyList = new ListBox();
+        SetActiveNavigation("Nearby People");
+        ShowListPage("Nearby People", _nearbyList, () =>
+        {
+            if (refreshFromService) _service.RefreshNearbyPeople();
+            _nearbyList.Items.Clear();
+            foreach (var person in _service.NearbyPeople.OrderBy(p => p.Distance).ThenBy(p => p.Name))
+                _nearbyList.Items.Add(new ConversationItem(person.Id, person.Name, ConversationKind.Private, DisplayText: person.DisplayText));
+            if (_nearbyList.Items.Count == 0) _nearbyList.Items.Add(_service.NearbyPeopleStatus);
+        }, () => ShowNearbyPeople());
+        _nearbyList.DoubleClick -= OpenSelectedNearbyPerson;
+        _nearbyList.DoubleClick += OpenSelectedNearbyPerson;
+        _nearbyList.KeyDown -= OpenSelectedNearbyPersonFromKeyboard;
+        _nearbyList.KeyDown += OpenSelectedNearbyPersonFromKeyboard;
+    }
     private void ShowFriends()
     {
         _friendsList = new ListBox();
@@ -2648,7 +2837,7 @@ internal sealed class MainForm : Form
         {
             AppInfo.ProductTitle,
             "Second Life login and IM through LibreMetaverse.",
-            "Private IM, Friends, Groups, Notifications, Settings and tray mode.",
+            "Private IM, Local Chat, Nearby People, Friends, Groups, Notifications, Settings and tray mode.",
             $"Version {AppInfo.Version}"
         });
     }
@@ -2707,6 +2896,116 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void AttachAvatarContextMenu(ListBox list)
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("View Profile", null, (_, _) => _ = ViewSelectedAvatarProfileAsync(list));
+        menu.Items.Add("Open IM", null, (_, _) =>
+        {
+            if (list.SelectedItem is ConversationItem item)
+                OpenConversation(item);
+        });
+        list.ContextMenuStrip = menu;
+        list.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+            var index = list.IndexFromPoint(e.Location);
+            if (index >= 0) list.SelectedIndex = index;
+        };
+    }
+
+    private async Task ViewSelectedAvatarProfileAsync(ListBox list)
+    {
+        if (list.SelectedItem is not ConversationItem item || item.Kind != ConversationKind.Private) return;
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var profile = await _service.GetAvatarProfileAsync(item.Id, item.Name, timeout.Token);
+            ShowAvatarProfile(profile);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Profile unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private void ShowAvatarProfile(AvatarProfile profile)
+    {
+        var dialog = new Form
+        {
+            Text = $"Profile - {profile.Name}",
+            Size = new Size(560, 520),
+            MinimumSize = new Size(420, 360),
+            StartPosition = FormStartPosition.CenterParent,
+            BackColor = Theme.Bg,
+            ForeColor = Theme.Text,
+            Icon = _baseWindowIcon
+        };
+
+        var body = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(18),
+            BackColor = Theme.Bg
+        };
+        body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        dialog.Controls.Add(body);
+
+        var title = new Label
+        {
+            Text = profile.Name,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 16, FontStyle.Bold),
+            ForeColor = Theme.Text,
+            BackColor = Theme.Bg,
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        body.Controls.Add(title, 0, 0);
+
+        var details = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            BackColor = Theme.Panel,
+            ForeColor = Theme.Text,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 10),
+            Text = BuildAvatarProfileText(profile)
+        };
+        body.Controls.Add(details, 0, 1);
+        dialog.Show(this);
+    }
+
+    private static string BuildAvatarProfileText(AvatarProfile profile)
+    {
+        var lines = new List<string>
+        {
+            $"Second Life ID: {profile.Id}",
+            $"Born: {DisplayProfileValue(profile.BornOn)}",
+            $"Partner: {DisplayProfileValue(profile.Partner)}",
+            $"Profile URL: {DisplayProfileValue(profile.ProfileUrl)}",
+            "",
+            "About",
+            DisplayProfileValue(profile.AboutText),
+            "",
+            "First Life",
+            DisplayProfileValue(profile.FirstLifeText)
+        };
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string DisplayProfileValue(string value) => string.IsNullOrWhiteSpace(value) ? "Not provided" : value.Trim();
+    private void OpenSelectedNearbyPerson(object? sender, EventArgs e)
+    {
+        if (_nearbyList.SelectedItem is ConversationItem item)
+            OpenConversation(item);
+    }
     private void OpenSelectedFriend(object? sender, EventArgs e)
     {
         if (_friendsList.SelectedItem is ConversationItem item)
@@ -2719,6 +3018,13 @@ internal sealed class MainForm : Form
             OpenConversation(item);
     }
 
+    private void OpenSelectedNearbyPersonFromKeyboard(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Enter) return;
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+        OpenSelectedNearbyPerson(sender, EventArgs.Empty);
+    }
     private void OpenSelectedFriendFromKeyboard(object? sender, KeyEventArgs e)
     {
         if (e.KeyCode != Keys.Enter) return;
@@ -3225,6 +3531,13 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
+
+
+
+
 
 
 
