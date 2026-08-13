@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.30";
+    public const string Version = "0.4.31";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -1488,6 +1488,7 @@ internal sealed class LoginForm : Form
             _loginProgress.Visible = false;
             _error.ForeColor = Color.FromArgb(248, 113, 113);
             _error.Text = result.Message;
+            ShowLoginFailurePopup(result.Message);
             _loginButton.Enabled = _termsAccepted.Checked;
             return;
         }
@@ -1508,6 +1509,31 @@ internal sealed class LoginForm : Form
         mainForm.Show();
     }
 
+    private void ShowLoginFailurePopup(string message)
+    {
+        var displayMessage = IsCredentialFailure(message)
+            ? "Login name or password is incorrect."
+            : string.IsNullOrWhiteSpace(message)
+                ? "Login failed."
+                : message;
+
+        MessageBox.Show(this,
+            displayMessage,
+            "Login failed",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+    }
+
+    private static bool IsCredentialFailure(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        return message.Contains("user not found", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("incorrect", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("invalid login", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("bad password", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("password", StringComparison.OrdinalIgnoreCase) &&
+               message.Contains("incorrect", StringComparison.OrdinalIgnoreCase);
+    }
     private void UpdateLoginStatus(string text)
     {
         if (IsDisposed) return;
@@ -3111,6 +3137,8 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
 
 
 
