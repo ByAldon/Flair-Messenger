@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.37";
+    public const string Version = "0.4.40";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -221,6 +221,8 @@ internal static class LoginLocationParser
     }
 }
 
+internal sealed record AvatarPick(string Id, string Name);
+
 internal sealed record AvatarProfile(
     string Id,
     string Name,
@@ -228,7 +230,17 @@ internal sealed record AvatarProfile(
     string AboutText,
     string FirstLifeText,
     string ProfileUrl,
-    string Partner);
+    string Partner,
+    string CharterMember,
+    string ProfileImage,
+    string FirstLifeImage,
+    string Flags,
+    string AllowPublish,
+    string Online,
+    string MaturePublish,
+    string Identified,
+    string Transacted,
+    IReadOnlyList<AvatarPick> Picks);
 internal sealed record NearbyPerson(string Id, string Name, int X, int Y, int Z, double Distance)
 {
     public string DisplayText => $"{Name} - {Distance:0}m - ({X}, {Y}, {Z})";
@@ -577,6 +589,7 @@ internal sealed class SecondLifeService : IDisposable
     private readonly Dictionary<LMUUID, NearbyPerson> _nearbyPeople = new();
     private readonly object _avatarProfileLock = new();
     private readonly Dictionary<LMUUID, TaskCompletionSource<AvatarProfile>> _avatarProfileWaiters = new();
+    private readonly Dictionary<LMUUID, TaskCompletionSource<IReadOnlyList<AvatarPick>>> _avatarPicksWaiters = new();
     private readonly Dictionary<LMUUID, string> _avatarProfileNames = new();
     private readonly SemaphoreSlim _friendsRefreshLock = new(1, 1);
     private readonly object _groupChatLock = new();
@@ -718,6 +731,7 @@ internal sealed class SecondLifeService : IDisposable
         _client.Self.GroupChatJoined += (_, e) => HandleGroupChatJoined(e);
         _client.Objects.AvatarUpdate += (_, e) => UpdateNearbyAvatar(e.Avatar);
         _client.Avatars.AvatarPropertiesReply += (_, e) => HandleAvatarPropertiesReply(e);
+        _client.Avatars.AvatarPicksReply += (_, e) => HandleAvatarPicksReply(e);
         _client.Groups.CurrentGroups += (_, e) =>
         {
             _groups.Clear();
@@ -737,7 +751,9 @@ internal sealed class SecondLifeService : IDisposable
             lock (_avatarProfileLock)
             {
                 foreach (var waiter in _avatarProfileWaiters.Values) waiter.TrySetCanceled();
+                foreach (var waiter in _avatarPicksWaiters.Values) waiter.TrySetCanceled();
                 _avatarProfileWaiters.Clear();
+                _avatarPicksWaiters.Clear();
                 _avatarProfileNames.Clear();
             }
             NearbyPeopleStatus = "Disconnected.";
@@ -779,6 +795,66 @@ internal sealed class SecondLifeService : IDisposable
         return LMUUID.Zero;
     }
 
+    private static bool ReadBoolMember(object source, string name)
+    {
+        var value = ReadObjectMember(source, name);
+        if (value is bool boolValue) return boolValue;
+        if (value is string text && bool.TryParse(text, out var parsed)) return parsed;
+        return false;
+    }
+
+    private static string ReadYesNoMember(object source, string name)
+    {
+        var value = ReadObjectMember(source, name);
+        if (value is null) return "Not provided";
+        if (value is bool boolValue) return boolValue ? "Yes" : "No";
+        if (value is string text)
+        {
+            if (bool.TryParse(text, out var parsed)) return parsed ? "Yes" : "No";
+            return string.IsNullOrWhiteSpace(text) ? "Not provided" : text;
+        }
+        return value.ToString() ?? "Not provided";
+    }
+
+    private static IReadOnlyList<AvatarPick> ReadAvatarPicks(object? source)
+    {
+        if (source is null || source is string) return Array.Empty<AvatarPick>();
+        if (source is not System.Collections.IEnumerable enumerable) return Array.Empty<AvatarPick>();
+
+        var picks = new List<AvatarPick>();
+        foreach (var item in enumerable)
+        {
+            if (item is null) continue;
+            var key = ReadObjectMember(item, "Key");
+            var value = ReadObjectMember(item, "Value");
+            var id = KeyToDisplay(key);
+            var name = ValueToPickName(value);
+            if (string.IsNullOrWhiteSpace(id) && string.IsNullOrWhiteSpace(name))
+                name = item.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(name)) name = id;
+            picks.Add(new AvatarPick(id, name));
+        }
+        return picks;
+    }
+
+    private static string KeyToDisplay(object? value)
+    {
+        if (value is null) return "";
+        if (value is LMUUID uuid) return uuid == LMUUID.Zero ? "" : uuid.ToString();
+        return value.ToString() ?? "";
+    }
+
+    private static string ValueToPickName(object? value)
+    {
+        if (value is null) return "";
+        if (value is string text) return text;
+        foreach (var member in new[] { "Name", "PickName", "Title", "Desc", "Description" })
+        {
+            var display = ReadDisplayMember(value, member);
+            if (!string.IsNullOrWhiteSpace(display)) return display;
+        }
+        return value.ToString() ?? "";
+    }
     internal static bool IsTypingDialog(InstantMessageDialog dialog) =>
         dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping;
 
@@ -1080,9 +1156,20 @@ internal sealed class SecondLifeService : IDisposable
         try
         {
             _client.Avatars.RequestAvatarProperties(id);
+            var picksTask = RequestAvatarPicksAsync(id, token);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, timeout.Token);
-            return await waiter.Task.WaitAsync(linked.Token);
+            var profile = await waiter.Task.WaitAsync(linked.Token);
+            IReadOnlyList<AvatarPick> picks;
+            try
+            {
+                picks = await picksTask.WaitAsync(TimeSpan.FromSeconds(6));
+            }
+            catch
+            {
+                picks = Array.Empty<AvatarPick>();
+            }
+            return profile with { Picks = picks };
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
@@ -1095,6 +1182,23 @@ internal sealed class SecondLifeService : IDisposable
                 _avatarProfileWaiters.Remove(id);
                 _avatarProfileNames.Remove(id);
             }
+        }
+    }
+
+    private Task<IReadOnlyList<AvatarPick>> RequestAvatarPicksAsync(LMUUID avatarId, CancellationToken token)
+    {
+        var waiter = new TaskCompletionSource<IReadOnlyList<AvatarPick>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_avatarProfileLock) _avatarPicksWaiters[avatarId] = waiter;
+        try
+        {
+            _client.Avatars.RequestAvatarPicks(avatarId);
+            token.Register(() => waiter.TrySetCanceled());
+            return waiter.Task;
+        }
+        catch
+        {
+            lock (_avatarProfileLock) _avatarPicksWaiters.Remove(avatarId);
+            throw;
         }
     }
 
@@ -1122,8 +1226,37 @@ internal sealed class SecondLifeService : IDisposable
             ReadDisplayMember(properties, "AboutText"),
             ReadDisplayMember(properties, "FirstLifeText"),
             ReadDisplayMember(properties, "ProfileURL"),
-            ReadDisplayMember(properties, "Partner"));
+            ReadDisplayMember(properties, "Partner"),
+            ReadDisplayMember(properties, "CharterMember"),
+            ReadDisplayMember(properties, "ProfileImage"),
+            ReadDisplayMember(properties, "FirstLifeImage"),
+            ReadDisplayMember(properties, "Flags"),
+            ReadYesNoMember(properties, "AllowPublish"),
+            ReadYesNoMember(properties, "Online"),
+            ReadYesNoMember(properties, "MaturePublish"),
+            ReadYesNoMember(properties, "Identified"),
+            ReadYesNoMember(properties, "Transacted"),
+            Array.Empty<AvatarPick>());
         waiter.TrySetResult(profile);
+    }
+
+    private void HandleAvatarPicksReply(object reply)
+    {
+        var avatarId = ReadUuidMember(reply, "AvatarID");
+        if (avatarId == LMUUID.Zero) return;
+
+        TaskCompletionSource<IReadOnlyList<AvatarPick>>? waiter;
+        lock (_avatarProfileLock)
+        {
+            if (!_avatarPicksWaiters.TryGetValue(avatarId, out waiter)) return;
+            _avatarPicksWaiters.Remove(avatarId);
+        }
+
+        var picksSource = ReadObjectMember(reply, "Picks")
+            ?? ReadObjectMember(reply, "AvatarPicks")
+            ?? ReadObjectMember(reply, "PickList")
+            ?? ReadObjectMember(reply, "PicksMap");
+        waiter.TrySetResult(ReadAvatarPicks(picksSource));
     }
     public bool SendLocalChat(string text)
     {
@@ -1522,7 +1655,7 @@ internal sealed class LoginForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             BackColor = Theme.Bg
@@ -1851,7 +1984,7 @@ internal sealed class LoginForm : Form
         var textLayout = new TableLayoutPanel
         {
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             BackColor = Theme.Bg
@@ -2053,7 +2186,7 @@ internal sealed class MainForm : Form
         _tray.ContextMenuStrip.Items.Add("Exit", null, (_, _) => Close());
         _tray.DoubleClick += (_, _) => RestoreFromTray();
         _profileChatButton.AccessibleName = "View avatar profile";
-        _profileChatButton.Click += (_, _) => OpenActiveWebProfile();
+        _profileChatButton.Click += async (_, _) => await ViewActiveAvatarProfileAsync();
         _closeChatButton.AccessibleName = "Close active chat";
         _closeChatButton.Click += (_, _) => CloseActiveConversation();
 
@@ -2195,7 +2328,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             BackColor = Theme.Bg
@@ -2236,7 +2369,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             BackColor = Theme.Rail
@@ -2542,7 +2675,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             BackColor = Theme.Panel
@@ -2917,7 +3050,7 @@ internal sealed class MainForm : Form
     private void AttachAvatarContextMenu(ListBox list)
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("View Profile", null, (_, _) => OpenSelectedWebProfile(list));
+        menu.Items.Add("View Profile", null, (_, _) => _ = ViewSelectedAvatarProfileAsync(list));
         menu.Items.Add("Open IM", null, (_, _) =>
         {
             if (list.SelectedItem is ConversationItem item)
@@ -2932,16 +3065,36 @@ internal sealed class MainForm : Form
         };
     }
 
-    private void OpenActiveWebProfile()
+    private async Task ViewActiveAvatarProfileAsync()
     {
         if (_active.Kind != ConversationKind.Private) return;
-        OpenWebProfile(_active.Id);
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var profile = await _service.GetAvatarProfileAsync(_active.Id, _active.Name, timeout.Token);
+            ShowAvatarProfile(profile);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Profile unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
-    private void OpenSelectedWebProfile(ListBox list)
+    private async Task ViewSelectedAvatarProfileAsync(ListBox list)
     {
         if (list.SelectedItem is not ConversationItem item || item.Kind != ConversationKind.Private) return;
-        OpenWebProfile(item.Id);
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var profile = await _service.GetAvatarProfileAsync(item.Id, item.Name, timeout.Token);
+            ShowAvatarProfile(profile);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Profile unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
     private void ShowAvatarProfile(AvatarProfile profile)
@@ -3000,25 +3153,34 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Top,
             ColumnCount = 2,
-            RowCount = 4,
+            RowCount = 13,
             AutoSize = true,
             BackColor = Theme.Panel,
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 0, 12)
         };
-        meta.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        meta.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         meta.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         AddProfileMetaRow(meta, 0, "Born", profile.BornOn);
-        AddProfileMetaRow(meta, 1, "Partner", profile.Partner);
-        AddProfileMetaRow(meta, 2, "Profile URL", profile.ProfileUrl);
-        AddProfileMetaRow(meta, 3, "Avatar ID", profile.Id);
+        AddProfileMetaRow(meta, 1, "Account age", AccountAge(profile.BornOn));
+        AddProfileMetaRow(meta, 2, "Partner", profile.Partner);
+        AddProfileMetaRow(meta, 3, "Payment info on file", profile.Identified);
+        AddProfileMetaRow(meta, 4, "Payment info used", profile.Transacted);
+        AddProfileMetaRow(meta, 5, "Online", profile.Online);
+        AddProfileMetaRow(meta, 6, "Web profile", profile.AllowPublish);
+        AddProfileMetaRow(meta, 7, "Mature profile", profile.MaturePublish);
+        AddProfileMetaRow(meta, 8, "Charter member", profile.CharterMember);
+        AddProfileMetaRow(meta, 9, "Profile flags", profile.Flags);
+        AddProfileMetaRow(meta, 10, "Profile image", profile.ProfileImage);
+        AddProfileMetaRow(meta, 11, "First Life image", profile.FirstLifeImage);
+        AddProfileMetaRow(meta, 12, "Avatar ID", profile.Id);
         body.Controls.Add(meta, 0, 1);
 
         var sections = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             BackColor = Theme.Bg,
             Margin = Padding.Empty
         };
@@ -3031,19 +3193,94 @@ internal sealed class MainForm : Form
         dialog.Show(this);
     }
 
-    private static void OpenWebProfile(string avatarId)
+    private void OpenWebProfile(string avatarId, string displayName = "")
     {
         if (string.IsNullOrWhiteSpace(avatarId)) return;
         var url = $"https://world.secondlife.com/resident/{avatarId}";
-        try
+        var titleText = string.IsNullOrWhiteSpace(displayName) ? "Second Life Profile" : $"Profile - {displayName}";
+
+        var dialog = new Form
         {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        }
-        catch
+            Text = titleText,
+            Size = new Size(920, 720),
+            MinimumSize = new Size(640, 480),
+            StartPosition = FormStartPosition.CenterParent,
+            BackColor = Theme.Bg,
+            ForeColor = Theme.Text,
+            Icon = _baseWindowIcon
+        };
+
+        var layout = new TableLayoutPanel
         {
-            Clipboard.SetText(url);
-            MessageBox.Show("The web profile URL was copied to the clipboard.", "Web Profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            BackColor = Theme.Bg,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        dialog.Controls.Add(layout);
+
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = Theme.Panel,
+            Padding = new Padding(14, 7, 14, 7)
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        layout.Controls.Add(header, 0, 0);
+
+        var label = new Label
+        {
+            Text = titleText,
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            Font = new Font("Segoe UI", 11, FontStyle.Bold),
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        header.Controls.Add(label, 0, 0);
+
+        var refresh = LoginForm.Button("Refresh");
+        refresh.Dock = DockStyle.Fill;
+        header.Controls.Add(refresh, 1, 0);
+
+        var browser = new WebBrowser
+        {
+            Dock = DockStyle.Fill,
+            ScriptErrorsSuppressed = true,
+            AllowWebBrowserDrop = false,
+            IsWebBrowserContextMenuEnabled = true
+        };
+        layout.Controls.Add(browser, 0, 1);
+
+        refresh.Click += (_, _) => browser.Navigate(url);
+        browser.Navigate(url);
+        dialog.Show(this);
+    }
+    private static string ProfilePicksText(IReadOnlyList<AvatarPick> picks)
+    {
+        if (picks.Count == 0) return "No picks returned by Second Life.";
+        return string.Join(Environment.NewLine, picks.Select((pick, index) =>
+            string.IsNullOrWhiteSpace(pick.Id)
+                ? $"{index + 1}. {pick.Name}"
+                : $"{index + 1}. {pick.Name} ({pick.Id})"));
+    }
+
+    private static string AccountAge(string bornOn)
+    {
+        if (string.IsNullOrWhiteSpace(bornOn)) return "Not provided";
+        if (!DateTime.TryParse(bornOn, out var born)) return "Not provided";
+        var days = Math.Max(0, (DateTime.Today - born.Date).Days);
+        var years = days / 365;
+        var remainderDays = days % 365;
+        return years > 0 ? $"{years} year{(years == 1 ? "" : "s")}, {remainderDays} day{(remainderDays == 1 ? "" : "s")}" : $"{days} day{(days == 1 ? "" : "s")}";
     }
     private static void AddProfileMetaRow(TableLayoutPanel table, int row, string label, string value)
     {
@@ -3076,7 +3313,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             BackColor = Theme.Panel,
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 0, 10)
@@ -3639,6 +3876,11 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
+
+
 
 
 
