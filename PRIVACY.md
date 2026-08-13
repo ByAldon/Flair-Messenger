@@ -1,4 +1,4 @@
-# Privacy
+﻿# Privacy
 
 Flair Messenger is designed as a local, privacy-focused Second Life messaging client. This document explains what information the application processes, where it goes and how users can remove it.
 
@@ -8,7 +8,7 @@ Flair Messenger is designed as a local, privacy-focused Second Life messaging cl
 - No developer-operated server is used.
 - No analytics, advertising, telemetry or user tracking is included.
 - No automatic crash reports are uploaded.
-- No automatic update checks are performed.
+- A startup update check contacts GitHub Releases to compare the latest public version. No update is downloaded or installed automatically.
 - Login and messaging traffic goes directly through LibreMetaverse to the official Second Life services.
 - Remembered settings and local message history are encrypted for the current Windows user.
 - Local information can be removed by deleting the `data` folder while the application is closed.
@@ -73,7 +73,7 @@ The Flair Messenger source code defines one login endpoint:
 https://login.agni.lindenlab.com/cgi-bin/login.cgi
 ```
 
-After login, LibreMetaverse communicates with Second Life simulator and messaging services required for the active session. Flair Messenger does not add analytics, advertising, telemetry, tracking pixels or unrelated network destinations.
+On startup, Flair Messenger may request the latest public release metadata from GitHub at `https://api.github.com/repos/ByAldon/Flair-Messenger/releases/latest`. This is used only to compare versions and show an update prompt. After login, LibreMetaverse communicates with Second Life simulator and messaging services required for the active session. Flair Messenger does not add analytics, advertising, telemetry, tracking pixels or unrelated network destinations.
 
 Second Life is a third-party service. Its handling of account and session information is governed by Linden Lab's own terms and privacy documentation.
 
@@ -102,3 +102,4 @@ Before sharing a screenshot, log or bug report, remove account names, avatar nam
 ## Changes to this document
 
 Privacy-related behavior changes should be documented here and in the README version history. Contributors should treat any new analytics, external service, persistent identifier or network destination as a privacy-impacting change requiring explicit review.
+

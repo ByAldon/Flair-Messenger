@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="assets/fmicon.png" alt="Flair Messenger icon" width="128">
 </p>
 
@@ -17,7 +17,7 @@ Flair Messenger - Messenger for Second Life provides a focused way to access Sec
 
 The application connects directly to the official Second Life main grid through LibreMetaverse. It supports private conversations, group conversations, friends, notifications and local message history.
 
-Current version: **0.4.27**
+Current version: **0.4.29**
 
 > [!WARNING]
 > Flair Messenger does not currently support MFA/2FA login challenges. An account that requires a second factor during sign-in cannot complete login through this client. Do not disable MFA/2FA solely to use an experimental application. MFA/2FA support is a future goal, but it is not currently prioritized or scheduled while the application remains in development. See [ROADMAP.md](ROADMAP.md).
@@ -201,7 +201,7 @@ Important privacy notes:
 - Version 0.4.0 automatically migrates legacy `settings.json` and `messages.json` files to encrypted `.dat` files. A legacy file is deleted only after its encrypted replacement has been written successfully.
 - The official release ZIP should never contain the `data` folder.
 
-Flair Messenger contains no analytics, advertising, telemetry, crash reporting or automatic update checks. Network communication is performed by LibreMetaverse and is used only for the Second Life login and messaging session. See [PRIVACY.md](PRIVACY.md) for the complete privacy documentation.
+Flair Messenger contains no analytics, advertising, telemetry or crash reporting. On startup, it checks the public GitHub Releases API for newer Flair Messenger releases and only opens the release page after user confirmation. Second Life login and messaging communication is performed by LibreMetaverse. See [PRIVACY.md](PRIVACY.md) for the complete privacy documentation.
 
 ## Folder structure
 
@@ -338,7 +338,7 @@ This is expected. Minimizing sends Flair Messenger to the system tray so it can 
 - Messaging focused: no 3D world view, voice, inventory browser or avatar rendering.
 - Encrypted settings and history are tied to one Windows user account and cannot be moved reliably to another Windows account.
 - Notifications are kept only for the current running session.
-- No automatic updater.
+- Startup update check only; updates are not downloaded or installed automatically.
 - No installer or digital code signature.
 - A forced process termination cannot perform the logout handshake.
 
@@ -382,3 +382,4 @@ Third-party libraries and assets are not covered by the Flair Messenger MIT Lice
 ## Disclaimer
 
 Use Flair Messenger entirely at your own risk. Keep your account credentials private, download releases only from a source you trust and review the source code before distributing modified builds. See [TERMS.md](TERMS.md) for the complete user notice and links to the official Second Life policies.
+

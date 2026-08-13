@@ -1,8 +1,9 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Net.Http;
 using LibreMetaverse;
 using LMUUID = LibreMetaverse.UUID;
 
@@ -20,13 +21,58 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.27";
+    public const string Version = "0.4.29";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
     public const string UserAgent = Name + " " + Version;
+    public const string ReleasesUrl = "https://github.com/ByAldon/Flair-Messenger/releases";
+    public const string LatestReleaseApiUrl = "https://api.github.com/repos/ByAldon/Flair-Messenger/releases/latest";
 }
 
+
+internal sealed record UpdateCheckResult(bool IsUpdateAvailable, string LatestVersion, string ReleaseUrl);
+
+internal static class UpdateChecker
+{
+    public static async Task<UpdateCheckResult> CheckAsync(CancellationToken token)
+    {
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(AppInfo.UserAgent.Replace(" ", "-"));
+        using var response = await http.GetAsync(AppInfo.LatestReleaseApiUrl, token);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(token);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
+        var root = document.RootElement;
+        var tag = root.TryGetProperty("tag_name", out var tagElement) ? tagElement.GetString() ?? "" : "";
+        var url = root.TryGetProperty("html_url", out var urlElement) ? urlElement.GetString() ?? AppInfo.ReleasesUrl : AppInfo.ReleasesUrl;
+        var latest = NormalizeVersion(tag);
+        var current = NormalizeVersion(AppInfo.Version);
+        var updateAvailable = TryCompareVersions(latest, current, out var comparison) && comparison > 0;
+        return new UpdateCheckResult(updateAvailable, string.IsNullOrWhiteSpace(latest) ? tag : latest, url);
+    }
+
+    private static string NormalizeVersion(string value)
+    {
+        value = value.Trim();
+        if (value.StartsWith("v", StringComparison.OrdinalIgnoreCase)) value = value[1..];
+        var plus = value.IndexOf('+');
+        if (plus >= 0) value = value[..plus];
+        var dash = value.IndexOf('-');
+        if (dash >= 0) value = value[..dash];
+        return value.Trim();
+    }
+
+    private static bool TryCompareVersions(string latest, string current, out int comparison)
+    {
+        comparison = 0;
+        if (!Version.TryParse(latest, out var latestVersion) || !Version.TryParse(current, out var currentVersion))
+            return false;
+        comparison = latestVersion.CompareTo(currentVersion);
+        return true;
+    }
+}
 internal sealed class AppSettings
 {
     public bool Remember { get; set; }
@@ -457,7 +503,7 @@ internal static class Theme
     public static readonly Color HistoryText = Color.FromArgb(151, 155, 162);
     public static readonly Font Font = new("Segoe UI", 10);
     public static readonly Font Bold = new("Segoe UI", 10, FontStyle.Bold);
-    public static readonly Font WindowGlyph = new("Segoe UI Symbol", 11);
+    public static readonly Font WindowGlyph = new("Segoe MDL2 Assets", 10);
 }
 
 internal sealed class ThemedButton : Button
@@ -664,6 +710,7 @@ internal sealed class SecondLifeService : IDisposable
             if (!response.Success)
                 return (false, string.IsNullOrWhiteSpace(response.Message) ? "Login failed." : response.Message);
 
+            _ = RefreshAppearanceAfterLoginAsync();
             Status?.Invoke("Signed in. Retrieving offline IMs...");
             try { await _client.Self.RetrieveInstantMessagesAsync(token); } catch { }
             try { _client.Groups.RequestCurrentGroups(); } catch { }
@@ -744,6 +791,27 @@ internal sealed class SecondLifeService : IDisposable
         catch (Exception)
         {
             // RefreshFriendsAsync reports a user-readable status before returning or rethrowing.
+        }
+    }
+
+    private async Task RefreshAppearanceAfterLoginAsync()
+    {
+        try
+        {
+            Status?.Invoke("Restoring avatar appearance...");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            await _client.Appearance.RequestSetAppearance(false);
+            while (_client.Appearance.ManagerBusy && !cts.Token.IsCancellationRequested)
+                await Task.Delay(500, cts.Token);
+            Status?.Invoke("Avatar appearance restored.");
+        }
+        catch (OperationCanceledException)
+        {
+            Status?.Invoke("Avatar appearance is still baking; it may remain a cloud for a moment.");
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Could not restore avatar appearance: {ex.Message}");
         }
     }
 
@@ -1032,6 +1100,30 @@ internal sealed class LoginForm : Form
         _loginBody.Controls.Add(_error);
 
         LoadRememberedAccounts(settings);
+        Shown += async (_, _) => await CheckForUpdatesWhenOpenedAsync();
+    }
+
+
+    private async Task CheckForUpdatesWhenOpenedAsync()
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var result = await UpdateChecker.CheckAsync(timeout.Token);
+            if (!result.IsUpdateAvailable) return;
+
+            var answer = MessageBox.Show(this,
+                $"Flair Messenger v{result.LatestVersion} is available. Open the GitHub release page?",
+                "Update available",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+            if (answer == DialogResult.Yes)
+                Process.Start(new ProcessStartInfo { FileName = result.ReleaseUrl, UseShellExecute = true });
+        }
+        catch
+        {
+            // Update checks should never block login or normal app use.
+        }
     }
 
     private void ConfigureLoginSelector()
@@ -1182,8 +1274,8 @@ internal sealed class LoginForm : Form
         windowButtons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         titleLayout.Controls.Add(windowButtons, 2, 0);
 
-        var minimize = WindowButton("—", "Minimize");
-        var close = WindowButton("×", "Close");
+        var minimize = WindowButton("\uE921", "Minimize");
+        var close = WindowButton("\uE8BB", "Close");
         close.FlatAppearance.MouseOverBackColor = Color.FromArgb(196, 43, 28);
         close.FlatAppearance.MouseDownBackColor = Color.FromArgb(160, 32, 24);
         minimize.Click += (_, _) => WindowState = FormWindowState.Minimized;
@@ -1620,6 +1712,37 @@ internal sealed class MainForm : Form
         RefreshAll();
     }
 
+    private async Task CheckForUpdatesOnStartupAsync()
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var result = await UpdateChecker.CheckAsync(timeout.Token);
+            if (result.IsUpdateAvailable)
+            {
+                AddNotification($"Update available: v{result.LatestVersion}.");
+                var answer = MessageBox.Show(this,
+                    $"Flair Messenger v{result.LatestVersion} is available. Open the GitHub release page?",
+                    "Update available",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+                if (answer == DialogResult.Yes)
+                    Process.Start(new ProcessStartInfo { FileName = result.ReleaseUrl, UseShellExecute = true });
+            }
+            else
+            {
+                AddNotification("Update check complete: Flair Messenger is up to date.");
+            }
+            if (_activePage.Equals("Notifications", StringComparison.OrdinalIgnoreCase)) ShowNotifications();
+        }
+        catch (Exception ex)
+        {
+            AddNotification($"Update check failed: {ex.Message}");
+            if (_activePage.Equals("Notifications", StringComparison.OrdinalIgnoreCase)) ShowNotifications();
+        }
+    }
+
+
     private static bool IsLegacyTypingArtifact(ChatRecord record) =>
         !record.Sender.Equals("Me", StringComparison.OrdinalIgnoreCase) &&
         !record.ConversationId.Equals("system", StringComparison.OrdinalIgnoreCase) &&
@@ -1900,10 +2023,10 @@ internal sealed class MainForm : Form
         windowButtons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(windowButtons, 2, 0);
 
-        var minimize = WindowButton("—", "Minimize");
-        _maximizeWindowButton.Text = "□";
+        var minimize = WindowButton("\uE921", "Minimize");
+        _maximizeWindowButton.Text = "\uE922";
         StyleWindowButton(_maximizeWindowButton, "Maximize");
-        var close = WindowButton("×", "Close");
+        var close = WindowButton("\uE8BB", "Close");
         close.FlatAppearance.MouseOverBackColor = Color.FromArgb(196, 43, 28);
         close.FlatAppearance.MouseDownBackColor = Color.FromArgb(160, 32, 24);
 
@@ -1978,7 +2101,7 @@ internal sealed class MainForm : Form
 
     private void UpdateMaximizeButton()
     {
-        _maximizeWindowButton.Text = WindowState == FormWindowState.Maximized ? "❐" : "□";
+        _maximizeWindowButton.Text = WindowState == FormWindowState.Maximized ? "\uE923" : "\uE922";
         _maximizeWindowButton.AccessibleName = WindowState == FormWindowState.Maximized ? "Restore" : "Maximize";
     }
 
@@ -2865,3 +2988,8 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
+
+
