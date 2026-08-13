@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -21,7 +22,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.45";
+    public const string Version = "0.4.46";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -3829,11 +3830,40 @@ internal sealed class MainForm : Form
     private static string AccountAge(string bornOn)
     {
         if (string.IsNullOrWhiteSpace(bornOn)) return "Not provided";
-        if (!DateTime.TryParse(bornOn, out var born)) return "Not provided";
-        var days = Math.Max(0, (DateTime.Today - born.Date).Days);
+        if (!TryParseSecondLifeDate(bornOn, out var born)) return "Not provided";
+        var days = Math.Max(0, (SecondLifeToday() - born.Date).Days);
         var years = days / 365;
         var remainderDays = days % 365;
         return years > 0 ? $"{years} year{(years == 1 ? "" : "s")}, {remainderDays} day{(remainderDays == 1 ? "" : "s")}" : $"{days} day{(days == 1 ? "" : "s")}";
+    }
+
+    private static DateTime SecondLifeToday()
+    {
+        try
+        {
+            var sltZone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+            return TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, sltZone).Date;
+        }
+        catch
+        {
+            return DateTimeOffset.UtcNow.AddHours(-8).Date;
+        }
+    }
+    private static bool TryParseSecondLifeDate(string value, out DateTime date)
+    {
+        var formats = new[]
+        {
+            "M/d/yyyy",
+            "MM/dd/yyyy",
+            "M/d/yy",
+            "MM/dd/yy",
+            "yyyy-MM-dd",
+            "d/M/yyyy",
+            "dd/MM/yyyy"
+        };
+        return DateTime.TryParseExact(value.Trim(), formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
+            || DateTime.TryParse(value.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
+            || DateTime.TryParse(value.Trim(), CultureInfo.CurrentCulture, DateTimeStyles.None, out date);
     }
     private static void AddProfileMetaRow(TableLayoutPanel table, int row, string label, string value)
     {
@@ -4465,6 +4495,8 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
 
 
 
