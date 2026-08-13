@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.34";
+    public const string Version = "0.4.35";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -1572,7 +1572,7 @@ internal sealed class LoginForm : Form
         var windowButtons = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
@@ -1982,6 +1982,7 @@ internal sealed class MainForm : Form
     private readonly Panel _titleBar = new();
     private readonly Label _windowTitle = new();
     private readonly Button _maximizeWindowButton = new();
+    private readonly Button _profileChatButton = LoginForm.Button("Profile");
     private readonly Button _closeChatButton = LoginForm.Button("Close chat");
     private readonly Dictionary<string, Button> _navButtons = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _closedConversationIds = new(StringComparer.OrdinalIgnoreCase);
@@ -2042,6 +2043,8 @@ internal sealed class MainForm : Form
         _tray.ContextMenuStrip.Items.Add("Mark all as read", null, (_, _) => ClearUnread());
         _tray.ContextMenuStrip.Items.Add("Exit", null, (_, _) => Close());
         _tray.DoubleClick += (_, _) => RestoreFromTray();
+        _profileChatButton.AccessibleName = "View avatar profile";
+        _profileChatButton.Click += async (_, _) => await ViewActiveAvatarProfileAsync();
         _closeChatButton.AccessibleName = "Close active chat";
         _closeChatButton.Click += (_, _) => CloseActiveConversation();
 
@@ -2559,13 +2562,14 @@ internal sealed class MainForm : Form
         var header = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Margin = Padding.Empty,
             Padding = new Padding(18, 8, 18, 8),
             BackColor = Theme.Panel
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
         header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -2586,10 +2590,15 @@ internal sealed class MainForm : Form
         headerText.Controls.Add(_title);
         header.Controls.Add(headerText, 0, 0);
 
+        _profileChatButton.Dock = DockStyle.Fill;
+        _profileChatButton.Margin = new Padding(8, 4, 0, 4);
+        _profileChatButton.Visible = _active.Kind == ConversationKind.Private;
+        header.Controls.Add(_profileChatButton, 1, 0);
+
         _closeChatButton.Dock = DockStyle.Fill;
         _closeChatButton.Margin = new Padding(8, 4, 0, 4);
         _closeChatButton.Visible = _active.Kind is not ConversationKind.System and not ConversationKind.Local;
-        header.Controls.Add(_closeChatButton, 1, 0);
+        header.Controls.Add(_closeChatButton, 2, 0);
         chatLayout.Controls.Add(header, 0, 0);
 
         var feedPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Bg, Padding = new Padding(18, 12, 18, 8), Margin = Padding.Empty };
@@ -2914,6 +2923,21 @@ internal sealed class MainForm : Form
         };
     }
 
+    private async Task ViewActiveAvatarProfileAsync()
+    {
+        if (_active.Kind != ConversationKind.Private) return;
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var profile = await _service.GetAvatarProfileAsync(_active.Id, _active.Name, timeout.Token);
+            ShowAvatarProfile(profile);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Profile unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
     private async Task ViewSelectedAvatarProfileAsync(ListBox list)
     {
         if (list.SelectedItem is not ConversationItem item || item.Kind != ConversationKind.Private) return;
@@ -3531,6 +3555,10 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
+
 
 
 
