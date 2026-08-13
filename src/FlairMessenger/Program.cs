@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.32";
+    public const string Version = "0.4.33";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -598,6 +598,24 @@ internal sealed class SecondLifeService : IDisposable
             catch
             {
                 return "";
+            }
+        }
+    }
+    public string CurrentLocationDisplay
+    {
+        get
+        {
+            var simName = CurrentSimName.Trim();
+            if (string.IsNullOrWhiteSpace(simName)) return "";
+
+            try
+            {
+                var position = _client.Self.SimPosition;
+                return $"{simName} ({(int)Math.Round(position.X)}, {(int)Math.Round(position.Y)}, {(int)Math.Round(position.Z)})";
+            }
+            catch
+            {
+                return simName;
             }
         }
     }
@@ -1780,6 +1798,7 @@ internal sealed class MainForm : Form
     private readonly string _loginName;
     private readonly string _location;
     private string _currentSimName = "";
+    private string _currentLocationDisplay = "";
     private readonly List<ChatRecord> _messages;
     private readonly List<ChatRecord> _notifications;
     private ListBox _conversations = new();
@@ -1862,8 +1881,8 @@ internal sealed class MainForm : Form
         BuildShell();
         WireSecondLifeEvents();
         AddSystem("Signed in to Second Life.");
-        UpdateCurrentSimName(addSystemMessage: true);
-        _ = RefreshCurrentSimNameAfterLoginAsync();
+        UpdateCurrentLocation(addSystemMessage: true);
+        _ = RefreshCurrentLocationAfterLoginAsync();
         ShowChats();
         RefreshAll();
     }
@@ -1931,7 +1950,7 @@ internal sealed class MainForm : Form
         {
             AddSystem(text);
             AddNotification(text);
-            UpdateCurrentSimName(addSystemMessage: false);
+            UpdateCurrentLocation(addSystemMessage: false);
             RefreshAll();
         });
     }
@@ -1949,19 +1968,26 @@ internal sealed class MainForm : Form
         _windowTitle.Text = title;
     }
 
-    private void UpdateCurrentSimName(bool addSystemMessage)
+    private void UpdateCurrentLocation(bool addSystemMessage)
     {
         var simName = _service.CurrentSimName.Trim();
-        if (string.IsNullOrWhiteSpace(simName) || simName.Equals(_currentSimName, StringComparison.OrdinalIgnoreCase))
-            return;
+        if (string.IsNullOrWhiteSpace(simName)) return;
+
+        var location = _service.CurrentLocationDisplay.Trim();
+        if (string.IsNullOrWhiteSpace(location)) location = simName;
+
+        var simChanged = !simName.Equals(_currentSimName, StringComparison.OrdinalIgnoreCase);
+        var locationChanged = !location.Equals(_currentLocationDisplay, StringComparison.OrdinalIgnoreCase);
+        if (!simChanged && !locationChanged) return;
 
         _currentSimName = simName;
+        _currentLocationDisplay = location;
         UpdateWindowTitle();
         if (addSystemMessage)
-            AddSystem($"Current sim: {_currentSimName}");
+            AddSystem($"Current location: {_currentLocationDisplay}");
     }
 
-    private async Task RefreshCurrentSimNameAfterLoginAsync()
+    private async Task RefreshCurrentLocationAfterLoginAsync()
     {
         await Task.Delay(TimeSpan.FromSeconds(3));
         if (IsDisposed) return;
@@ -1970,13 +1996,13 @@ internal sealed class MainForm : Form
         {
             BeginInvoke(() =>
             {
-                UpdateCurrentSimName(addSystemMessage: true);
+                UpdateCurrentLocation(addSystemMessage: true);
                 RefreshAll();
             });
             return;
         }
 
-        UpdateCurrentSimName(addSystemMessage: true);
+        UpdateCurrentLocation(addSystemMessage: true);
         RefreshAll();
     }
 
@@ -3199,6 +3225,8 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
 
 
 
