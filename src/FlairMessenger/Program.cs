@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.40";
+    public const string Version = "0.4.45";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -221,7 +221,7 @@ internal static class LoginLocationParser
     }
 }
 
-internal sealed record AvatarPick(string Id, string Name);
+internal sealed record AvatarPick(string Id, string Name, string Description = "", string Location = "");
 
 internal sealed record AvatarProfile(
     string Id,
@@ -531,7 +531,60 @@ internal static class Theme
     public static readonly Font WindowGlyph = new("Segoe MDL2 Assets", 10);
 }
 
-internal sealed class ThemedButton : Button
+
+
+internal sealed class PickListItem
+{
+    public PickListItem(AvatarPick pick) => Pick = pick;
+    public AvatarPick Pick { get; set; }
+    public override string ToString() => string.IsNullOrWhiteSpace(Pick.Name) ? "Untitled pick" : Pick.Name;
+}
+
+internal sealed class ProfileTabControl : TabControl
+{
+    public ProfileTabControl()
+    {
+        DrawMode = TabDrawMode.OwnerDrawFixed;
+        SizeMode = TabSizeMode.Fixed;
+        ItemSize = new Size(96, 28);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(Theme.Bg);
+        for (var i = 0; i < TabPages.Count; i++) DrawTab(e.Graphics, i);
+
+        if (SelectedIndex >= 0)
+        {
+            using var border = new Pen(Color.FromArgb(66, 69, 76));
+            var pageBounds = DisplayRectangle;
+            pageBounds.Inflate(1, 1);
+            e.Graphics.DrawRectangle(border, pageBounds);
+        }
+    }
+
+    private void DrawTab(Graphics graphics, int index)
+    {
+        var bounds = GetTabRect(index);
+        var selected = index == SelectedIndex;
+        var background = selected ? Theme.Panel : Theme.Rail;
+        var foreground = selected ? Theme.Text : Theme.Muted;
+
+        using var brush = new SolidBrush(background);
+        graphics.FillRectangle(brush, bounds);
+        using var border = new Pen(Color.FromArgb(66, 69, 76));
+        graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+
+        TextRenderer.DrawText(
+            graphics,
+            TabPages[index].Text,
+            Font,
+            bounds,
+            foreground,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+}internal sealed class ThemedButton : Button
 {
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -590,6 +643,8 @@ internal sealed class SecondLifeService : IDisposable
     private readonly object _avatarProfileLock = new();
     private readonly Dictionary<LMUUID, TaskCompletionSource<AvatarProfile>> _avatarProfileWaiters = new();
     private readonly Dictionary<LMUUID, TaskCompletionSource<IReadOnlyList<AvatarPick>>> _avatarPicksWaiters = new();
+    private readonly Dictionary<LMUUID, (TaskCompletionSource<AvatarPick> Waiter, AvatarPick Fallback)> _pickInfoWaiters = new();
+    private readonly Dictionary<LMUUID, TaskCompletionSource<string>> _avatarNameWaiters = new();
     private readonly Dictionary<LMUUID, string> _avatarProfileNames = new();
     private readonly SemaphoreSlim _friendsRefreshLock = new(1, 1);
     private readonly object _groupChatLock = new();
@@ -732,6 +787,13 @@ internal sealed class SecondLifeService : IDisposable
         _client.Objects.AvatarUpdate += (_, e) => UpdateNearbyAvatar(e.Avatar);
         _client.Avatars.AvatarPropertiesReply += (_, e) => HandleAvatarPropertiesReply(e);
         _client.Avatars.AvatarPicksReply += (_, e) => HandleAvatarPicksReply(e);
+        _client.Avatars.PickInfoReply += (_, e) => HandlePickInfoReply(e);
+        _client.Avatars.UUIDNameReply += (_, e) => HandleUuidNameReply(e);
+        _client.Self.AlertMessage += (_, e) =>
+        {
+            var message = ReadStringMember(e, "Message");
+            if (!string.IsNullOrWhiteSpace(message)) Status?.Invoke(message);
+        };
         _client.Groups.CurrentGroups += (_, e) =>
         {
             _groups.Clear();
@@ -752,8 +814,12 @@ internal sealed class SecondLifeService : IDisposable
             {
                 foreach (var waiter in _avatarProfileWaiters.Values) waiter.TrySetCanceled();
                 foreach (var waiter in _avatarPicksWaiters.Values) waiter.TrySetCanceled();
+                foreach (var pending in _pickInfoWaiters.Values) pending.Waiter.TrySetCanceled();
+                foreach (var waiter in _avatarNameWaiters.Values) waiter.TrySetCanceled();
                 _avatarProfileWaiters.Clear();
                 _avatarPicksWaiters.Clear();
+                _pickInfoWaiters.Clear();
+                _avatarNameWaiters.Clear();
                 _avatarProfileNames.Clear();
             }
             NearbyPeopleStatus = "Disconnected.";
@@ -1163,13 +1229,23 @@ internal sealed class SecondLifeService : IDisposable
             IReadOnlyList<AvatarPick> picks;
             try
             {
-                picks = await picksTask.WaitAsync(TimeSpan.FromSeconds(6));
+                picks = await picksTask.WaitAsync(TimeSpan.FromSeconds(1));
             }
             catch
             {
                 picks = Array.Empty<AvatarPick>();
             }
-            return profile with { Picks = picks };
+
+            string partnerName;
+            try
+            {
+                partnerName = await ResolvePartnerDisplayAsync(profile.Partner, token).WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch
+            {
+                partnerName = string.IsNullOrWhiteSpace(profile.Partner) ? "Not provided" : profile.Partner;
+            }
+            return profile with { Partner = partnerName, Picks = picks };
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
@@ -1185,7 +1261,24 @@ internal sealed class SecondLifeService : IDisposable
         }
     }
 
-    private Task<IReadOnlyList<AvatarPick>> RequestAvatarPicksAsync(LMUUID avatarId, CancellationToken token)
+
+    public async Task<AvatarPick> GetAvatarPickDetailAsync(string avatarId, AvatarPick pick, CancellationToken token)
+    {
+        if (!LMUUID.TryParse(avatarId, out var id) || id == LMUUID.Zero)
+            throw new InvalidOperationException("This avatar has no valid Second Life ID.");
+        if (!LMUUID.TryParse(pick.Id, out var pickId) || pickId == LMUUID.Zero)
+            return pick;
+        if (!_client.Network.Connected)
+            throw new InvalidOperationException("Pick details cannot be loaded while disconnected.");
+
+        var detail = await RequestPickInfoAsync(id, pickId, pick, token).WaitAsync(TimeSpan.FromSeconds(8));
+        return detail with
+        {
+            Name = FirstNonEmpty(detail.Name, pick.Name),
+            Description = FirstNonEmpty(detail.Description, pick.Description),
+            Location = FirstNonEmpty(detail.Location, pick.Location)
+        };
+    }    private Task<IReadOnlyList<AvatarPick>> RequestAvatarPicksAsync(LMUUID avatarId, CancellationToken token)
     {
         var waiter = new TaskCompletionSource<IReadOnlyList<AvatarPick>>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_avatarProfileLock) _avatarPicksWaiters[avatarId] = waiter;
@@ -1202,6 +1295,129 @@ internal sealed class SecondLifeService : IDisposable
         }
     }
 
+    private async Task<IReadOnlyList<AvatarPick>> ResolvePickDetailsAsync(LMUUID avatarId, IReadOnlyList<AvatarPick> picks, CancellationToken token)
+    {
+        if (picks.Count == 0) return picks;
+
+        var detailed = new List<AvatarPick>();
+        foreach (var pick in picks)
+        {
+            if (!LMUUID.TryParse(pick.Id, out var pickId) || pickId == LMUUID.Zero)
+            {
+                detailed.Add(pick);
+                continue;
+            }
+
+            try
+            {
+                var detail = await RequestPickInfoAsync(avatarId, pickId, pick, token).WaitAsync(TimeSpan.FromSeconds(2));
+                detailed.Add(detail with
+                {
+                    Name = FirstNonEmpty(detail.Name, pick.Name),
+                    Description = FirstNonEmpty(detail.Description, pick.Description),
+                    Location = FirstNonEmpty(detail.Location, pick.Location)
+                });
+            }
+            catch
+            {
+                detailed.Add(pick);
+            }
+        }
+        return detailed;
+    }
+
+    private Task<AvatarPick> RequestPickInfoAsync(LMUUID avatarId, LMUUID pickId, AvatarPick fallback, CancellationToken token)
+    {
+        var waiter = new TaskCompletionSource<AvatarPick>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_avatarProfileLock) _pickInfoWaiters[pickId] = (waiter, fallback);
+        try
+        {
+            _client.Avatars.RequestPickInfo(avatarId, pickId);
+            token.Register(() => waiter.TrySetResult(fallback));
+            return waiter.Task;
+        }
+        catch
+        {
+            lock (_avatarProfileLock) _pickInfoWaiters.Remove(pickId);
+            throw;
+        }
+    }
+    private async Task<string> ResolvePartnerDisplayAsync(string partner, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(partner)) return "Not provided";
+        if (!LMUUID.TryParse(partner, out var partnerId) || partnerId == LMUUID.Zero) return partner;
+
+        try
+        {
+            var name = await RequestAvatarNameAsync(partnerId, token).WaitAsync(TimeSpan.FromSeconds(3));
+            return string.IsNullOrWhiteSpace(name) ? "Partner name unavailable" : name;
+        }
+        catch
+        {
+            return "Partner name unavailable";
+        }
+    }
+
+    private Task<string> RequestAvatarNameAsync(LMUUID avatarId, CancellationToken token)
+    {
+        var waiter = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_avatarProfileLock) _avatarNameWaiters[avatarId] = waiter;
+        try
+        {
+            _client.Avatars.RequestAvatarName(avatarId);
+            token.Register(() => waiter.TrySetCanceled());
+            return waiter.Task;
+        }
+        catch
+        {
+            lock (_avatarProfileLock) _avatarNameWaiters.Remove(avatarId);
+            throw;
+        }
+    }
+
+    private void HandleUuidNameReply(object reply)
+    {
+        foreach (var (id, name) in ReadUuidNameReply(reply))
+        {
+            TaskCompletionSource<string>? waiter;
+            lock (_avatarProfileLock)
+            {
+                if (!_avatarNameWaiters.TryGetValue(id, out waiter)) continue;
+                _avatarNameWaiters.Remove(id);
+            }
+            waiter.TrySetResult(name);
+        }
+    }
+
+    private static IReadOnlyList<(LMUUID Id, string Name)> ReadUuidNameReply(object reply)
+    {
+        var names = ReadObjectMember(reply, "Names")
+            ?? ReadObjectMember(reply, "NamesList")
+            ?? ReadObjectMember(reply, "NameList")
+            ?? ReadObjectMember(reply, "Avatars");
+        if (names is not System.Collections.IEnumerable enumerable || names is string)
+        {
+            var id = ReadUuidMember(reply, "ID");
+            if (id == LMUUID.Zero) id = ReadUuidMember(reply, "AvatarID");
+            var name = ReadDisplayMember(reply, "Name");
+            if (string.IsNullOrWhiteSpace(name)) name = ReadDisplayMember(reply, "AvatarName");
+            return id == LMUUID.Zero || string.IsNullOrWhiteSpace(name) ? Array.Empty<(LMUUID, string)>() : new[] { (id, name) };
+        }
+
+        var result = new List<(LMUUID, string)>();
+        foreach (var item in enumerable)
+        {
+            if (item is null) continue;
+            var key = ReadObjectMember(item, "Key");
+            var value = ReadObjectMember(item, "Value");
+            var id = key is LMUUID keyUuid ? keyUuid : ReadUuidMember(item, "ID");
+            if (id == LMUUID.Zero) id = ReadUuidMember(item, "AvatarID");
+            var name = value is string valueText ? valueText : ValueToPickName(value);
+            if (string.IsNullOrWhiteSpace(name)) name = ReadDisplayMember(item, "Name");
+            if (id != LMUUID.Zero && !string.IsNullOrWhiteSpace(name)) result.Add((id, name));
+        }
+        return result;
+    }
     private void HandleAvatarPropertiesReply(object reply)
     {
         var avatarId = ReadUuidMember(reply, "AvatarID");
@@ -1257,6 +1473,68 @@ internal sealed class SecondLifeService : IDisposable
             ?? ReadObjectMember(reply, "PickList")
             ?? ReadObjectMember(reply, "PicksMap");
         waiter.TrySetResult(ReadAvatarPicks(picksSource));
+    }
+    private void HandlePickInfoReply(object reply)
+    {
+        var pickId = ReadUuidMember(reply, "PickID");
+        if (pickId == LMUUID.Zero) pickId = ReadUuidMember(reply, "PickId");
+        if (pickId == LMUUID.Zero) pickId = ReadUuidMember(reply, "PickUUID");
+        if (pickId == LMUUID.Zero) return;
+
+        TaskCompletionSource<AvatarPick>? waiter;
+        AvatarPick fallback;
+        lock (_avatarProfileLock)
+        {
+            if (!_pickInfoWaiters.TryGetValue(pickId, out var pending)) return;
+            _pickInfoWaiters.Remove(pickId);
+            waiter = pending.Waiter;
+            fallback = pending.Fallback;
+        }
+
+        var pick = ReadObjectMember(reply, "Pick") ?? ReadObjectMember(reply, "ProfilePick") ?? reply;
+        var name = FirstNonEmpty(
+            ReadDisplayMember(pick, "Name"),
+            ReadDisplayMember(reply, "Name"),
+            ReadDisplayMember(reply, "PickName"),
+            ReadDisplayMember(reply, "Title"),
+            fallback.Name);
+        var description = FirstNonEmpty(
+            ReadDisplayMember(pick, "Desc"),
+            ReadDisplayMember(pick, "Description"),
+            ReadDisplayMember(pick, "Text"),
+            ReadDisplayMember(reply, "Desc"),
+            ReadDisplayMember(reply, "Description"),
+            ReadDisplayMember(reply, "Text"),
+            fallback.Description);
+        var location = FirstNonEmpty(
+            ReadDisplayMember(pick, "SimName"),
+            ReadDisplayMember(pick, "Location"),
+            ReadDisplayMember(pick, "PosGlobal"),
+            ReadDisplayMember(reply, "Location"),
+            ReadDisplayMember(reply, "SimName"),
+            ReadDisplayMember(reply, "GlobalPos"),
+            ReadDisplayMember(reply, "PosGlobal"),
+            fallback.Location);
+
+        waiter.TrySetResult(new AvatarPick(pickId.ToString(), name, description, location));
+    }
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+        }
+        return "";
+    }
+    public bool SetHomeHere()
+    {
+        if (!_client.Network.Connected) return false;
+        _client.Self.SetHome();
+        var location = CurrentLocationDisplay.Trim();
+        Status?.Invoke(string.IsNullOrWhiteSpace(location)
+            ? "Requested home location update."
+            : $"Requested home location update at {location}.");
+        return true;
     }
     public bool SendLocalChat(string text)
     {
@@ -2914,7 +3192,7 @@ internal sealed class MainForm : Form
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         panel.Controls.Add(layout);
 
@@ -2968,6 +3246,33 @@ internal sealed class MainForm : Form
                 savedStatus.Text = "The setting could not be saved, but it remains active for this session.";
             }
         };
+        var setHomeStatus = ShellLabel("", 0, 0, 700, 24, 9);
+        setHomeStatus.Dock = DockStyle.Top;
+        setHomeStatus.ForeColor = Theme.Muted;
+        setHomeStatus.Padding = new Padding(22, 8, 0, 0);
+
+        var setHomeExplanation = ShellLabel(
+            "Set your current Second Life position as your home location. This only works where the region or parcel allows setting home.",
+            0, 0, 700, 46, 9);
+        setHomeExplanation.Dock = DockStyle.Top;
+        setHomeExplanation.ForeColor = Theme.Muted;
+        setHomeExplanation.Padding = new Padding(22, 8, 0, 0);
+
+        var setHomeButton = LoginForm.Button("Set Home Here");
+        setHomeButton.Dock = DockStyle.Top;
+        setHomeButton.Height = 36;
+        setHomeButton.Width = 160;
+        setHomeButton.Margin = new Padding(22, 12, 0, 0);
+        setHomeButton.Click += (_, _) =>
+        {
+            setHomeStatus.Text = _service.SetHomeHere()
+                ? "Home location request sent. Second Life will confirm if it was allowed."
+                : "Home location could not be set while disconnected.";
+        };
+
+        preferencePanel.Controls.Add(setHomeStatus);
+        preferencePanel.Controls.Add(setHomeButton);
+        preferencePanel.Controls.Add(setHomeExplanation);
         preferencePanel.Controls.Add(savedStatus);
         preferencePanel.Controls.Add(explanation);
         preferencePanel.Controls.Add(minimizeToTray);
@@ -3102,13 +3407,28 @@ internal sealed class MainForm : Form
         var dialog = new Form
         {
             Text = $"Profile - {profile.Name}",
-            Size = new Size(620, 600),
-            MinimumSize = new Size(500, 420),
+            Size = new Size(780, 720),
+            MinimumSize = new Size(620, 520),
             StartPosition = FormStartPosition.CenterParent,
             BackColor = Theme.Bg,
             ForeColor = Theme.Text,
-            Icon = _baseWindowIcon
+            Icon = _baseWindowIcon,
+            FormBorderStyle = FormBorderStyle.None
         };
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = Theme.Bg,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        dialog.Controls.Add(root);
+        root.Controls.Add(BuildProfileTitleBar(dialog, profile.Name), 0, 0);
 
         var body = new TableLayoutPanel
         {
@@ -3118,14 +3438,12 @@ internal sealed class MainForm : Form
             Padding = new Padding(18),
             BackColor = Theme.Bg
         };
-        body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        body.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
+        body.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        dialog.Controls.Add(body);
+        root.Controls.Add(body, 0, 1);
 
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, Height = 82, ColumnCount = 2, RowCount = 1, BackColor = Theme.Bg, Margin = new Padding(0, 0, 0, 10) };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
+        var header = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Bg, Margin = new Padding(0, 0, 0, 8) };
         var title = new Label
         {
             Text = profile.Name,
@@ -3149,17 +3467,134 @@ internal sealed class MainForm : Form
         header.Controls.Add(title);
         body.Controls.Add(header, 0, 0);
 
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = Theme.Bg,
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        var copyAll = LoginForm.Button("Copy All");
+        copyAll.Width = 108;
+        copyAll.Height = 34;
+        copyAll.Click += (_, _) => Clipboard.SetText(BuildCopyableProfileText(profile));
+        actions.Controls.Add(copyAll);
+        body.Controls.Add(actions, 0, 1);
+
+        var tabs = new ProfileTabControl
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 9),
+            Margin = Padding.Empty
+        };
+        tabs.TabPages.Add(ProfileTab(profile));
+        tabs.TabPages.Add(ProfileTextTab("About", profile.AboutText));
+        tabs.TabPages.Add(ProfileTextTab("First Life", profile.FirstLifeText));
+        tabs.TabPages.Add(ProfilePicksTab(profile));
+        body.Controls.Add(tabs, 0, 2);
+
+        dialog.Show(this);
+    }
+
+    private Control BuildProfileTitleBar(Form dialog, string profileName)
+    {
+        var titleBar = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Rail, Margin = Padding.Empty };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Theme.Rail,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 138));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        titleBar.Controls.Add(layout);
+
+        var iconHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10, 7, 8, 7),
+            BackColor = Theme.Rail,
+            Margin = Padding.Empty
+        };
+        var icon = new PictureBox
+        {
+            Dock = DockStyle.Fill,
+            Image = LoadImageCopy(Store.IconPath),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            BackColor = Theme.Rail,
+            Margin = Padding.Empty
+        };
+        iconHost.Controls.Add(icon);
+        layout.Controls.Add(iconHost, 0, 0);
+
+        var title = new Label
+        {
+            Text = $"Profile - {profileName}",
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            Font = new Font("Segoe UI", 9),
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Rail,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        layout.Controls.Add(title, 1, 0);
+
+        var buttons = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Theme.Rail,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        for (var i = 0; i < 3; i++) buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
+        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(buttons, 2, 0);
+
+        var minimize = WindowButton("\uE921", "Minimize");
+        var maximize = WindowButton("\uE922", "Maximize");
+        var close = WindowButton("\uE8BB", "Close");
+        close.FlatAppearance.MouseOverBackColor = Color.FromArgb(196, 43, 28);
+        close.FlatAppearance.MouseDownBackColor = Color.FromArgb(160, 32, 24);
+        minimize.Click += (_, _) => dialog.WindowState = FormWindowState.Minimized;
+        maximize.Click += (_, _) => dialog.WindowState = dialog.WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+        close.Click += (_, _) => dialog.Close();
+        buttons.Controls.Add(minimize, 0, 0);
+        buttons.Controls.Add(maximize, 1, 0);
+        buttons.Controls.Add(close, 2, 0);
+
+        foreach (var dragSurface in new Control[] { titleBar, layout, iconHost, icon, title })
+        {
+            dragSurface.MouseDown += (_, e) => BeginWindowDrag(dialog, e);
+            dragSurface.DoubleClick += (_, _) => dialog.WindowState = dialog.WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+        }
+
+        return titleBar;
+    }
+    private static TabPage ProfileTab(AvatarProfile profile)
+    {
+        var page = new TabPage("Profile") { BackColor = Theme.Bg, ForeColor = Theme.Text };
+        var scroller = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Theme.Bg, Padding = new Padding(0, 12, 12, 12) };
+        page.Controls.Add(scroller);
+
         var meta = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             ColumnCount = 2,
-            RowCount = 13,
+            RowCount = 10,
             AutoSize = true,
             BackColor = Theme.Panel,
-            Padding = new Padding(12),
-            Margin = new Padding(0, 0, 0, 12)
+            Padding = new Padding(14),
+            Margin = Padding.Empty
         };
-        meta.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        meta.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         meta.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         AddProfileMetaRow(meta, 0, "Born", profile.BornOn);
         AddProfileMetaRow(meta, 1, "Account age", AccountAge(profile.BornOn));
@@ -3171,28 +3606,131 @@ internal sealed class MainForm : Form
         AddProfileMetaRow(meta, 7, "Mature profile", profile.MaturePublish);
         AddProfileMetaRow(meta, 8, "Charter member", profile.CharterMember);
         AddProfileMetaRow(meta, 9, "Profile flags", profile.Flags);
-        AddProfileMetaRow(meta, 10, "Profile image", profile.ProfileImage);
-        AddProfileMetaRow(meta, 11, "First Life image", profile.FirstLifeImage);
-        AddProfileMetaRow(meta, 12, "Avatar ID", profile.Id);
-        body.Controls.Add(meta, 0, 1);
-
-        var sections = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            BackColor = Theme.Bg,
-            Margin = Padding.Empty
-        };
-        sections.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        sections.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        sections.Controls.Add(ProfileSection("About", profile.AboutText), 0, 0);
-        sections.Controls.Add(ProfileSection("First Life", profile.FirstLifeText), 0, 1);
-        body.Controls.Add(sections, 0, 2);
-
-        dialog.Show(this);
+        scroller.Controls.Add(meta);
+        return page;
     }
 
+    private static TabPage ProfileTextTab(string title, string text)
+    {
+        var page = new TabPage(title) { BackColor = Theme.Bg, ForeColor = Theme.Text };
+        page.Controls.Add(new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.None,
+            BackColor = Theme.Panel,
+            ForeColor = Theme.Text,
+            Font = new Font("Segoe UI", 10),
+            Text = DisplayProfileText(text),
+            Margin = Padding.Empty
+        });
+        return page;
+    }
+
+    private TabPage ProfilePicksTab(AvatarProfile profile)
+    {
+        var page = new TabPage("Picks") { BackColor = Theme.Bg, ForeColor = Theme.Text };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = Theme.Bg,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        page.Controls.Add(layout);
+
+        var list = new ListBox
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ForeColor = Theme.Text,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 10),
+            IntegralHeight = false
+        };
+        layout.Controls.Add(list, 0, 0);
+
+        var detail = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Theme.Panel,
+            ForeColor = Theme.Text,
+            Font = new Font("Segoe UI", 10),
+            Text = profile.Picks.Count == 0 ? "No picks returned by Second Life." : "Select a pick to load its details.",
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        layout.Controls.Add(detail, 1, 0);
+
+        foreach (var pick in profile.Picks)
+            list.Items.Add(new PickListItem(pick));
+
+        list.SelectedIndexChanged += async (_, _) =>
+        {
+            if (list.SelectedItem is not PickListItem item) return;
+            detail.Text = $"Loading {DisplayProfileValue(item.Pick.Name)}...";
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var loaded = await _service.GetAvatarPickDetailAsync(profile.Id, item.Pick, timeout.Token);
+                item.Pick = loaded;
+                detail.Text = PickDetailText(loaded);
+            }
+            catch (Exception ex)
+            {
+                detail.Text = $"Could not load this pick.\r\n\r\n{ex.Message}";
+            }
+        };
+
+        if (list.Items.Count > 0) list.SelectedIndex = 0;
+        return page;
+    }
+
+    private static string PickDetailText(AvatarPick pick)
+    {
+        var lines = new List<string> { DisplayProfileValue(pick.Name) };
+        if (!string.IsNullOrWhiteSpace(pick.Location)) lines.Add($"Location: {pick.Location.Trim()}");
+        lines.Add("");
+        lines.Add(string.IsNullOrWhiteSpace(pick.Description) ? "No extra details returned by Second Life for this pick." : DisplayProfileText(pick.Description));
+        return string.Join(Environment.NewLine, lines);
+    }
+    private static string BuildCopyableProfileText(AvatarProfile profile)
+    {
+        var lines = new List<string>
+        {
+            profile.Name,
+            "",
+            $"Born: {DisplayProfileValue(profile.BornOn)}",
+            $"Account age: {AccountAge(profile.BornOn)}",
+            $"Partner: {DisplayProfileValue(profile.Partner)}",
+            $"Payment info on file: {DisplayProfileValue(profile.Identified)}",
+            $"Payment info used: {DisplayProfileValue(profile.Transacted)}",
+            $"Online: {DisplayProfileValue(profile.Online)}",
+            $"Web profile: {DisplayProfileValue(profile.AllowPublish)}",
+            $"Mature profile: {DisplayProfileValue(profile.MaturePublish)}",
+            $"Charter member: {DisplayProfileValue(profile.CharterMember)}",
+            $"Profile flags: {DisplayProfileValue(profile.Flags)}",
+            "",
+            "About",
+            DisplayProfileText(profile.AboutText),
+            "",
+            "First Life",
+            DisplayProfileText(profile.FirstLifeText),
+            "",
+            "Picks",
+            ProfilePicksText(profile.Picks)
+        };
+        return string.Join(Environment.NewLine, lines);
+    }
     private void OpenWebProfile(string avatarId, string displayName = "")
     {
         if (string.IsNullOrWhiteSpace(avatarId)) return;
@@ -3267,12 +3805,27 @@ internal sealed class MainForm : Form
     private static string ProfilePicksText(IReadOnlyList<AvatarPick> picks)
     {
         if (picks.Count == 0) return "No picks returned by Second Life.";
-        return string.Join(Environment.NewLine, picks.Select((pick, index) =>
-            string.IsNullOrWhiteSpace(pick.Id)
-                ? $"{index + 1}. {pick.Name}"
-                : $"{index + 1}. {pick.Name} ({pick.Id})"));
-    }
 
+        var lines = new List<string>();
+        for (var i = 0; i < picks.Count; i++)
+        {
+            var pick = picks[i];
+            lines.Add($"{i + 1}. {DisplayProfileValue(pick.Name)}");
+            if (!string.IsNullOrWhiteSpace(pick.Location)) lines.Add($"Location: {pick.Location}");
+            if (!string.IsNullOrWhiteSpace(pick.Description))
+            {
+                lines.Add("");
+                lines.Add(pick.Description.Trim());
+            }
+            if (i < picks.Count - 1)
+            {
+                lines.Add("");
+                lines.Add("------------------------------");
+                lines.Add("");
+            }
+        }
+        return string.Join(Environment.NewLine, lines);
+    }
     private static string AccountAge(string bornOn)
     {
         if (string.IsNullOrWhiteSpace(bornOn)) return "Not provided";
@@ -3295,15 +3848,17 @@ internal sealed class MainForm : Form
             BackColor = Theme.Panel,
             Margin = new Padding(0, 0, 8, 8)
         }, 0, row);
-        table.Controls.Add(new Label
+        table.Controls.Add(new TextBox
         {
             Text = DisplayProfileValue(value),
             Dock = DockStyle.Top,
-            AutoSize = true,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
             Font = new Font("Segoe UI", 9),
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
-            Margin = new Padding(0, 0, 0, 8)
+            Margin = new Padding(0, 0, 0, 8),
+            TabStop = true
         }, 1, row);
     }
 
@@ -3346,6 +3901,40 @@ internal sealed class MainForm : Form
     }
 
     private static string DisplayProfileValue(string value) => string.IsNullOrWhiteSpace(value) ? "Not provided" : value.Trim();
+
+    private static string DisplayProfileText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "Not provided";
+        var text = value.Replace("\\r\\n", Environment.NewLine)
+            .Replace("\\n", Environment.NewLine)
+            .Replace("\\r", Environment.NewLine)
+            .Replace("\r\n", Environment.NewLine)
+            .Replace("\r", Environment.NewLine)
+            .Replace("\n", Environment.NewLine)
+            .Trim();
+
+        var rebuilt = new System.Text.StringBuilder(text.Length + 16);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var current = text[i];
+            rebuilt.Append(current);
+            if (char.IsWhiteSpace(current) || i >= text.Length - 1) continue;
+
+            var next = text[i + 1];
+            if (char.IsWhiteSpace(next)) continue;
+            if ((current == '.' || current == '!' || current == '?') && (char.IsLetter(next) || next == '(')) rebuilt.Append(' ');
+            else if (current == ')' && char.IsLetter(next)) rebuilt.Append(' ');
+        }
+
+        return rebuilt.ToString().Trim();
+    }
+
+    private static void BeginWindowDrag(Form form, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || form.WindowState == FormWindowState.Maximized) return;
+        ReleaseCapture();
+        SendMessage(form.Handle, 0x00A1, (IntPtr)2, IntPtr.Zero);
+    }
     private void OpenSelectedNearbyPerson(object? sender, EventArgs e)
     {
         if (_nearbyList.SelectedItem is ConversationItem item)
@@ -3876,6 +4465,22 @@ internal sealed class MainForm : Form
         Group
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,4 +1,4 @@
-# Flair Messenger Roadmap
+﻿# Flair Messenger Roadmap
 
 This roadmap describes the intended direction of Flair Messenger. It is not a release promise, and priorities may change as the application is tested and developed. Features listed here have no guaranteed delivery date unless a specific release milestone states otherwise.
 
@@ -57,6 +57,8 @@ MFA/2FA support is a future objective, but it is not a current priority and has 
 
 ### Packaging and development
 
+- Continue using the BAT-based launch flow during the development preview because it is easier for both developers and users to inspect, move and run the client files.
+- Flair Messenger has not officially launched yet. A standalone `.exe` package is planned for a future release, but there is no confirmed timeline.
 - Add broader automated tests for storage, messaging events and window lifecycle behavior.
 - Add continuous build and release validation for GitHub.
 - Investigate an optional installer and digitally signed releases when the project is mature enough.
@@ -71,3 +73,4 @@ Flair Messenger is intended to remain a focused messaging client. A full 3D worl
 Suggestions and implementation proposals are welcome through the repository's GitHub issues or discussions. Do not include passwords, session credentials, private messages or an unredacted `data` folder in a request.
 
 Roadmap entries describe intentions rather than commitments. Security, privacy and message reliability may take priority over the order shown above.
+
