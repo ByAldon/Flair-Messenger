@@ -21,7 +21,7 @@ internal static class Program
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.29";
+    public const string Version = "0.4.30";
     public const string Name = "Flair Messenger";
     public const string Tagline = "Messenger for Second Life";
     public const string ProductTitle = Name + " - " + Tagline;
@@ -565,7 +565,19 @@ internal sealed class SecondLifeService : IDisposable
     private readonly HashSet<LMUUID> _joinedGroupChats = [];
     private readonly Dictionary<LMUUID, TaskCompletionSource<bool>> _groupChatWaiters = new();
     private readonly Dictionary<LMUUID, string> _groupChatNames = new();
+    private System.Threading.Timer? _privacyBallHeartbeat;
+    private DateTime _lastPrivacyBallAckUtc = DateTime.MinValue;
+    private bool _privacyBallMissingReported;
     private bool _logoutRequested;
+
+    private const int PrivacyBallChannel = -90429117;
+    private const string PrivacyBallPingCommand = "FM_PING";
+    private const string PrivacyBallAckCommand = "FM_ACK";
+    private const string PrivacyBallOnCommand = "FM_ON";
+    private const string PrivacyBallHeartbeatCommand = "FM_HEARTBEAT";
+    private const string PrivacyBallOffCommand = "FM_OFF";
+    private const string LocalChatConversationId = "local";
+    private const string LocalChatConversationName = "Local Chat";
 
     public event Action<string>? Status;
     public event Action<ChatRecord>? MessageReceived;
@@ -612,6 +624,35 @@ internal sealed class SecondLifeService : IDisposable
                 Time = DateTime.Now
             });
         };
+        _client.Self.ChatFromSimulator += (_, e) =>
+        {
+            var message = ReadStringMember(e, "Message");
+            if (string.IsNullOrWhiteSpace(message)) return;
+
+            if (string.Equals(message, PrivacyBallAckCommand, StringComparison.Ordinal))
+            {
+                _lastPrivacyBallAckUtc = DateTime.UtcNow;
+                if (_privacyBallMissingReported)
+                {
+                    _privacyBallMissingReported = false;
+                    Status?.Invoke("flair-ball detected.");
+                }
+                return;
+            }
+
+            var sender = ReadStringMember(e, "FromName");
+            if (string.IsNullOrWhiteSpace(sender)) sender = ReadStringMember(e, "Name");
+            if (string.IsNullOrWhiteSpace(sender)) sender = "Nearby";
+
+            MessageReceived?.Invoke(new ChatRecord
+            {
+                ConversationId = LocalChatConversationId,
+                ConversationName = LocalChatConversationName,
+                Sender = sender,
+                Text = message,
+                Time = DateTime.Now
+            });
+        };
         _client.Friends.FriendOnline += (_, _) => UpdateFriendsStatus();
         _client.Friends.FriendOffline += (_, _) => UpdateFriendsStatus();
         _client.Friends.FriendNames += (_, _) => UpdateFriendsStatus();
@@ -635,6 +676,14 @@ internal sealed class SecondLifeService : IDisposable
             if (!_logoutRequested)
                 Status?.Invoke($"Connection lost: {e.Reason}");
         };
+    }
+
+    private static string ReadStringMember(object source, string name)
+    {
+        var type = source.GetType();
+        if (type.GetProperty(name)?.GetValue(source) is string propertyValue) return propertyValue;
+        if (type.GetField(name)?.GetValue(source) is string fieldValue) return fieldValue;
+        return "";
     }
 
     internal static bool IsTypingDialog(InstantMessageDialog dialog) =>
@@ -710,6 +759,7 @@ internal sealed class SecondLifeService : IDisposable
             if (!response.Success)
                 return (false, string.IsNullOrWhiteSpace(response.Message) ? "Login failed." : response.Message);
 
+            StartPrivacyBall();
             _ = RefreshAppearanceAfterLoginAsync();
             Status?.Invoke("Signed in. Retrieving offline IMs...");
             try { await _client.Self.RetrieveInstantMessagesAsync(token); } catch { }
@@ -782,6 +832,52 @@ internal sealed class SecondLifeService : IDisposable
         }
     }
 
+    private void StartPrivacyBall()
+    {
+        _lastPrivacyBallAckUtc = DateTime.MinValue;
+        _privacyBallMissingReported = false;
+        SendPrivacyBallCommand(PrivacyBallPingCommand);
+        SendPrivacyBallCommand(PrivacyBallOnCommand);
+        _privacyBallHeartbeat?.Dispose();
+        _privacyBallHeartbeat = new System.Threading.Timer(_ => SendPrivacyBallCommand(PrivacyBallHeartbeatCommand), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(20));
+        _ = CheckPrivacyBallAttachedAsync();
+    }
+
+    private async Task CheckPrivacyBallAttachedAsync()
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            if (!_client.Network.Connected || _lastPrivacyBallAckUtc != DateTime.MinValue) return;
+            SendPrivacyBallCommand(PrivacyBallPingCommand);
+            SendPrivacyBallCommand(PrivacyBallOnCommand);
+        }
+
+        if (!_client.Network.Connected || _lastPrivacyBallAckUtc != DateTime.MinValue) return;
+        _privacyBallMissingReported = true;
+        Status?.Invoke("flair-ball not attached.");
+    }
+
+    private void StopPrivacyBall()
+    {
+        _privacyBallHeartbeat?.Dispose();
+        _privacyBallHeartbeat = null;
+        SendPrivacyBallCommand(PrivacyBallOffCommand);
+    }
+
+    private void SendPrivacyBallCommand(string command)
+    {
+        try
+        {
+            if (_client.Network.Connected)
+                _client.Self.Chat(command, PrivacyBallChannel, ChatType.Normal, false);
+        }
+        catch
+        {
+            // flair-ball is optional; command failures must not interrupt messaging or logout.
+        }
+    }
+
     private async Task RefreshFriendsAfterLoginAsync()
     {
         try
@@ -820,6 +916,13 @@ internal sealed class SecondLifeService : IDisposable
         var count = _client.Friends.FriendList.Count;
         FriendsLoadStatus = $"{count} friend{(count == 1 ? "" : "s")} loaded.";
         FriendsChanged?.Invoke();
+    }
+
+    public bool SendLocalChat(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || !_client.Network.Connected) return false;
+        _client.Self.Chat(text.Trim(), 0, ChatType.Normal, false);
+        return true;
     }
 
     public bool SendInstantMessage(string avatarId, string text)
@@ -963,15 +1066,22 @@ internal sealed class SecondLifeService : IDisposable
 
     public void Logout()
     {
+        _privacyBallHeartbeat?.Dispose();
+        _privacyBallHeartbeat = null;
         if (!_client.Network.Connected) return;
         _logoutRequested = true;
+        SendPrivacyBallCommand(PrivacyBallOffCommand);
         _client.Network.Logout();
     }
 
     public async Task LogoutAsync(CancellationToken token)
     {
+        _privacyBallHeartbeat?.Dispose();
+        _privacyBallHeartbeat = null;
         if (!_client.Network.Connected) return;
         _logoutRequested = true;
+        SendPrivacyBallCommand(PrivacyBallOffCommand);
+        await Task.Delay(250, token);
         await _client.Network.LogoutAsync(token);
     }
 
@@ -979,6 +1089,7 @@ internal sealed class SecondLifeService : IDisposable
     {
         CancelGroupChatWaiters();
         Logout();
+        _privacyBallHeartbeat?.Dispose();
         _client.Dispose();
     }
 
@@ -1652,6 +1763,8 @@ internal sealed class MainForm : Form
     private readonly NotifyIcon _tray;
     private Icon? _unreadBadgeIcon;
     private static readonly TimeSpan RecentConversationWindow = TimeSpan.FromHours(24);
+    private const string LocalChatConversationId = "local";
+    private const string LocalChatConversationName = "Local Chat";
     private readonly DateTime _sessionStartedUtc = DateTime.UtcNow;
     private ConversationItem _active = new("system", "System", ConversationKind.System);
     private bool _logoutStarted;
@@ -2189,7 +2302,7 @@ internal sealed class MainForm : Form
 
         _closeChatButton.Dock = DockStyle.Fill;
         _closeChatButton.Margin = new Padding(8, 4, 0, 4);
-        _closeChatButton.Visible = _active.Kind != ConversationKind.System;
+        _closeChatButton.Visible = _active.Kind is not ConversationKind.System and not ConversationKind.Local;
         header.Controls.Add(_closeChatButton, 1, 0);
         chatLayout.Controls.Add(header, 0, 0);
 
@@ -2566,10 +2679,15 @@ internal sealed class MainForm : Form
                 sent = result.Success;
                 failureMessage = result.Message;
             }
+            else if (conversation.Kind == ConversationKind.Local)
+            {
+                sent = _service.SendLocalChat(text);
+                failureMessage = "The local chat message could not be sent.";
+            }
             else
             {
                 sent = conversation.Kind == ConversationKind.Private && _service.SendInstantMessage(conversation.Id, text);
-                failureMessage = "Select a friend or group before sending a message.";
+                failureMessage = "Select local chat, a friend or group before sending a message.";
             }
         }
         catch (Exception ex)
@@ -2588,7 +2706,7 @@ internal sealed class MainForm : Form
 
         if (!sent)
         {
-            if (conversation.Kind == ConversationKind.Group)
+            if (conversation.Kind is ConversationKind.Group or ConversationKind.Local)
             {
                 AddMessage(new ChatRecord { ConversationId = conversation.Id, ConversationName = conversation.Name, Sender = AppInfo.Name, Text = failureMessage, Time = DateTime.Now });
                 if (_active.Id == conversation.Id) RenderMessages();
@@ -2627,11 +2745,13 @@ internal sealed class MainForm : Form
             var selected = _active.Id;
             _conversations.Items.Clear();
             _conversations.Items.Add(new ConversationItem("system", "System", ConversationKind.System));
+            _conversations.Items.Add(new ConversationItem(LocalChatConversationId, LocalChatConversationName, ConversationKind.Local));
 
             var nowUtc = DateTime.UtcNow;
             var recentConversations = _messages
                 .Where(message => IsRecentConversationMessage(message, nowUtc) &&
-                    !_closedConversationIds.Contains(message.ConversationId))
+                    !_closedConversationIds.Contains(message.ConversationId) &&
+                    !message.ConversationId.Equals(LocalChatConversationId, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(message => message.ConversationId, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.OrderByDescending(message => AsUtc(message.Time)).First())
                 .OrderByDescending(message => AsUtc(message.Time));
@@ -2699,12 +2819,13 @@ internal sealed class MainForm : Form
     {
         _title.Text = item.Name;
         _subtitle.Text = ConversationSubtitle(item);
-        _closeChatButton.Visible = item.Kind != ConversationKind.System;
+        _closeChatButton.Visible = item.Kind is not ConversationKind.System and not ConversationKind.Local;
     }
 
     private string ConversationSubtitle(ConversationItem item) => item.Kind switch
     {
         ConversationKind.Group => "Group chat - messages from group members",
+        ConversationKind.Local => "Nearby public chat in the current region",
         ConversationKind.Private => "Private instant message",
         _ => $"{_loginName} - {LoginLocationParser.Display(_location)}" 
     };
@@ -2975,6 +3096,7 @@ internal sealed class MainForm : Form
             ? Kind switch
             {
                 ConversationKind.Group => $"Group: {Name}",
+                ConversationKind.Local => Name,
                 ConversationKind.Private => $"Private IM: {Name}",
                 _ => Name
             }
@@ -2984,10 +3106,14 @@ internal sealed class MainForm : Form
     private enum ConversationKind
     {
         System,
+        Local,
         Private,
         Group
     }
 }
+
+
+
 
 
 
