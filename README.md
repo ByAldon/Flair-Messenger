@@ -97,6 +97,8 @@ The left navigation rail contains the following pages:
 
 Two Windows packages are available for version 0.4.46.
 
+The Windows installer (`.exe`) and portable package (`.zip`) can both be downloaded from the official [Flair Messenger Releases page](https://github.com/ByAldon/Flair-Messenger/releases).
+
 ### Installer
 
 1. Download `Flair-Messenger-Setup-v0.4.46.exe`.
@@ -367,7 +369,7 @@ This is expected. Minimizing sends Flair Messenger to the system tray so it can 
 
 ## Releases
 
-Version-specific changes and downloadable builds are published on the repository's [GitHub Releases](../../releases) page. This README intentionally documents only the current application behavior, requirements and limitations.
+Version-specific changes, the Windows installer (`.exe`) and the portable package (`.zip`) are published on the official [Flair Messenger Releases page](https://github.com/ByAldon/Flair-Messenger/releases). This README intentionally documents only the current application behavior, requirements and limitations.
 
 ## Contributing
 
