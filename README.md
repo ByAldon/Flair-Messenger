@@ -17,14 +17,14 @@ Flair Messenger - Messenger for Second Life provides a focused way to access Sec
 
 The application connects directly to the official Second Life main grid through LibreMetaverse. It supports private conversations, group conversations, friends, notifications and local message history.
 
-Current version: **0.4.29**
+Current version: **0.4.46**
 
 > [!WARNING]
 > Flair Messenger does not currently support MFA/2FA login challenges. An account that requires a second factor during sign-in cannot complete login through this client. Do not disable MFA/2FA solely to use an experimental application. MFA/2FA support is a future goal, but it is not currently prioritized or scheduled while the application remains in development. See [ROADMAP.md](ROADMAP.md).
 
 ## Required third-party viewer disclosure
 
-- **Software:** Flair Messenger 0.4.27.
+- **Software:** Flair Messenger 0.4.46.
 - **Linden Lab status:** This software is not provided or supported by Linden Lab, the makers of Second Life.
 - **Support:** Community assistance may be available through this repository's GitHub issues, but no customer support or response time is guaranteed. Linden Lab does not provide support for Flair Messenger.
 - **Limitations:** Flair Messenger is a text-focused client and does not support MFA/2FA login challenges, the 3D world, voice, inventory, avatar rendering or many other features of the official viewer. Review [Known limitations](#known-limitations) before installation.
@@ -65,8 +65,8 @@ Current version: **0.4.29**
 - Minimize to the Windows system tray.
 - Choose in Settings whether minimizing sends the client to the system tray or keeps it on the Windows taskbar.
 - Sign the avatar out before the application closes.
-- Run from a movable folder without an installer.
-- Start through a simple BAT launcher.
+- Install with the per-user Windows installer or run from a movable portable folder.
+- Start directly through `FlairMessenger.exe`.
 
 ## Screens and navigation
 
@@ -84,7 +84,7 @@ The left navigation rail contains the following pages:
 ### Running the packaged release
 
 - A modern Windows installation.
-- The [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0).
+- No separate .NET installation is required for the official self-contained installer and portable builds.
 - An active Second Life account whose login does not require an MFA/2FA challenge.
 - An internet connection that can reach the Second Life login and messaging services.
 
@@ -95,14 +95,26 @@ The left navigation rail contains the following pages:
 
 ## Installation
 
-1. Download the latest release ZIP.
-2. Extract the complete ZIP to a normal folder. Do not run it from inside the ZIP preview.
-3. Keep the included folder structure intact.
-4. Double-click `Start-FlairMessenger.bat`.
-5. The launcher briefly displays `Starting app, one moment...` and then opens the login screen.
-6. Review the official policy links and select the acceptance checkbox before signing in.
+Two Windows packages are available for version 0.4.46.
 
-No installer is required. The extracted application folder can be moved to another writable location.
+### Installer
+
+1. Download `Flair-Messenger-Setup-v0.4.46.exe`.
+2. Run the installer. Administrator access is not required because Flair Messenger is installed for the current Windows user.
+3. Start Flair Messenger from the desktop shortcut or Start menu.
+4. Review the official policy links and select the acceptance checkbox before signing in.
+
+The installer registers Flair Messenger in Windows **Installed apps** and includes an uninstaller. During removal, you can choose whether to keep or delete the local settings and message history.
+
+### Portable
+
+1. Download `Flair-Messenger-Portable-v0.4.46.zip`.
+2. Extract the complete ZIP to a normal writable folder. Do not run it from inside the ZIP preview.
+3. Keep the included folder structure intact.
+4. Double-click `FlairMessenger.exe`.
+5. Review the official policy links and select the acceptance checkbox before signing in.
+
+The extracted portable folder can be moved to another writable location. Close Flair Messenger before moving it and keep its local `data` folder with it.
 
 ## Signing in
 
@@ -184,7 +196,7 @@ Ending the process through Task Manager or forcibly shutting down Windows cannot
 
 ## Local data and privacy
 
-Flair Messenger creates a `data` folder next to `Start-FlairMessenger.bat` when it first needs to store information.
+Flair Messenger creates a `data` folder next to `FlairMessenger.exe` when it first needs to store information.
 
 | File | Purpose | Protection |
 | --- | --- | --- |
@@ -246,7 +258,7 @@ The VBS launcher:
 5. Falls back to `dotnet run` and the source project when the compiled app is unavailable.
 6. Writes startup output to `data/launcher.log`.
 
-The fallback requires the full .NET 8 SDK. The normal packaged release only requires the .NET 8 Desktop Runtime.
+The legacy launcher fallback requires the full .NET 8 SDK. The official self-contained installer and portable packages do not require a separate .NET installation.
 
 ## Build from source
 
@@ -258,16 +270,18 @@ dotnet build .\src\FlairMessenger\FlairMessenger.csproj -c Release
 dotnet run --project .\src\FlairMessenger\FlairMessenger.csproj -c Release
 ```
 
-To create the framework-dependent `app` folder used by the launcher:
+To create the self-contained 64-bit Windows build used by the installer and portable packages:
 
 ```powershell
 dotnet publish .\src\FlairMessenger\FlairMessenger.csproj `
   -c Release `
-  -p:UseAppHost=false `
-  -o .\app
+  -r win-x64 `
+  --self-contained true `
+  -p:UseAppHost=true `
+  -o .\publish\win-x64
 ```
 
-`UseAppHost=false` keeps the packaged application DLL-based. The launcher starts it with `dotnet`, so a separate application EXE is not required.
+The output contains `FlairMessenger.exe`, the bundled .NET runtime, application dependencies and required Linden runtime assets. Keep the complete published folder together.
 
 ## Creating a clean release
 
@@ -288,10 +302,10 @@ For a source-focused GitHub repository, consider excluding `app` from normal com
 ### Nothing happens after starting the BAT file
 
 - Make sure the ZIP was fully extracted.
-- Install the .NET 8 Desktop Runtime.
+- For an official installer or portable build, confirm that the complete self-contained package was extracted or installed.
 - Check `data/launcher.log` for the startup error.
 - Open a terminal and run `dotnet --info` to confirm that .NET is available.
-- Keep `Start-FlairMessenger.bat`, `Start-FlairMessenger.vbs` and the `app` folder together.
+- Keep `FlairMessenger.exe` and all accompanying folders and files together.
 
 ### The login fails
 
@@ -339,7 +353,7 @@ This is expected. Minimizing sends Flair Messenger to the system tray so it can 
 - Encrypted settings and history are tied to one Windows user account and cannot be moved reliably to another Windows account.
 - Notifications are kept only for the current running session.
 - Startup update check only; updates are not downloaded or installed automatically.
-- No installer or digital code signature.
+- The downloadable EXE files are not digitally code-signed.
 - A forced process termination cannot perform the logout handshake.
 
 ## Technology
@@ -382,4 +396,3 @@ Third-party libraries and assets are not covered by the Flair Messenger MIT Lice
 ## Disclaimer
 
 Use Flair Messenger entirely at your own risk. Keep your account credentials private, download releases only from a source you trust and review the source code before distributing modified builds. See [TERMS.md](TERMS.md) for the complete user notice and links to the official Second Life policies.
-
